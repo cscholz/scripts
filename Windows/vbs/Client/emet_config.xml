@@ -1,0 +1,956 @@
+<EMET_Apps Version="3.0.0.0">
+  <AppConfig Path="*\7-Zip" Executable="7z.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\7-Zip" Executable="7zFM.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\7-Zip" Executable="7zG.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Acrobat 10.0\Acrobat" Executable="Acrobat.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Acrobat 9.0\Acrobat" Executable="Acrobat.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Acrobat 8.0\Acrobat" Executable="Acrobat.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Reader 10.0\Reader" Executable="AcroRd32.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Reader 9.0\Reader" Executable="AcroRd32.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Reader 8.0\Reader" Executable="AcroRd32.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Google\Chrome\Application" Executable="chrome.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Lync" Executable="communicator.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="EXCEL.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="EXCEL.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="EXCEL.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="EXCEL.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Mozilla Firefox" Executable="firefox.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Google\Google Talk" Executable="googletalk.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Internet Explorer" Executable="iexplore.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="INFOPATH.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="INFOPATH.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="INFOPATH.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="INFOPATH.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\iTunes" Executable="iTunes.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Java\jre6\bin" Executable="java.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\bin" Executable="java.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Java\jre6\bin" Executable="javaw.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Java\jre6\bin" Executable="javaws.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\mIRC" Executable="mirc.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Windows Live\Mesh" Executable="MOE.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="MSACCESS.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="MSACCESS.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="MSACCESS.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="MSACCESS.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Windows Live\Messenger" Executable="msnmsgr.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="MSPUB.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="MSPUB.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="MSPUB.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="MSPUB.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Works" Executable="MSWorks.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Opera" Executable="opera.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="OUTLOOK.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="OUTLOOK.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="OUTLOOK.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="OUTLOOK.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS2" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS2 (64 Bit)" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS3" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS3 (64 Bit)" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS4" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS4 (64 Bit)" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS5" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS5 (64 Bit)" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS5.1" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Adobe\Adobe Photoshop CS5.1 (64 Bit)" Executable="Photoshop.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Pidgin" Executable="pidgin.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Mozilla Firefox" Executable="plugin-container.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Mozilla Thunderbird" Executable="plugin-container.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="POWERPNT.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="POWERPNT.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="POWERPNT.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="POWERPNT.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="PPTVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="PPTVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="PPTVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="PPTVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\QuickTime" Executable="QuickTimePlayer.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\WinRAR" Executable="rar.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Real\RealPlayer" Executable="realconverter.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Real\RealPlayer" Executable="realplay.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Safari" Executable="Safari.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Skype\Phone" Executable="Skype.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="false" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Mozilla Thunderbird" Executable="thunderbird.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\WinRAR" Executable="unrar.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="VISIO.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="VISIO.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="VISIO.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="VISIO.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\VideoLAN\VLC" Executable="vlc.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="VPREVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="VPREVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="VPREVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="VPREVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Winamp" Executable="winamp.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Windows Live\Sync" Executable="WindowsLiveSync.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Windows Live\Writer" Executable="WindowsLiveWriter.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\WinRAR" Executable="winrar.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE10" Executable="WINWORD.EXE">
+    <Mitigation Name="DEP" Enabled="false" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE11" Executable="WINWORD.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE12" Executable="WINWORD.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE14" Executable="WINWORD.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\WinZip" Executable="winzip32.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\WinZip" Executable="winzip64.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Works" Executable="WksCal.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Works" Executable="WksCalRem.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Windows Live\Mesh" Executable="WLSync.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Windows Media Player" Executable="wmplayer.exe">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="false" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="EXCEL.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="INFOPATH.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="MSACCESS.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="MSPUB.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="OUTLOOK.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="POWERPNT.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="PPTVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="VISIO.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="VPREVIEW.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+  <AppConfig Path="*\Microsoft Office\OFFICE15" Executable="WINWORD.EXE">
+    <Mitigation Name="DEP" Enabled="true" />
+    <Mitigation Name="SEHOP" Enabled="true" />
+    <Mitigation Name="NullPage" Enabled="true" />
+    <Mitigation Name="HeapSpray" Enabled="true" />
+    <Mitigation Name="EAF" Enabled="true" />
+    <Mitigation Name="MandatoryASLR" Enabled="true" />
+    <Mitigation Name="BottomUpASLR" Enabled="true" />
+  </AppConfig>
+</EMET_Apps>
