@@ -1,0 +1,71 @@
+On Error Resume Next
+
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set f = fso.OpenTextFile("fetchmailrc.txt", 2, True) 
+Set objExcel = CreateObject("Excel.Application")
+Set objWorkbook = objExcel.Workbooks.Open _
+    ("c:\...\Kundenliste.xls")
+
+f.WriteLine "set postmaster admin@domain.tld"
+f.WriteLine" set logfile /var/log/fetchmail.log"
+f.WriteLine "defaults"
+f.WriteLine "        envelope " & """" & "Delivered-To:" & """"
+f.WriteLine ""
+
+datafields = InputBox("Wie viele Datensätze sollen verarbeitet werden?")
+datafields = datafields + 5
+
+For Zeile = 6 To datafields
+
+'   Daten einlesen
+    str_email = objExcel.Cells(Zeile, 8).Value
+    str_user_web = objExcel.Cells(Zeile, 9).Value
+
+   if str_email = "" then
+      MsgBox("Es wurde ein leerer Datensatz entdeckt." & chr(13) & "Script wird beendet.")	
+      objExcel.Quit	
+      wscript.quit
+   end if
+
+   if str_user_web = "" then 
+      MsgBox("Es wurde ein leerer Datensatz entdeckt." & chr(13) & "Script wird beendet.")
+      objExcel.Quit	
+      wscript.quit
+   end if
+
+'   user splitten
+    ary_user = split (str_user_web, " ")
+    str_user = ary_user(0)
+
+'   Fehlerabhanldung
+    if Err.Number > 0 then
+       str_user = str_user_web
+       Err.Clear
+    else
+    end if
+
+    answer=MsgBox("######## " & str_email & " ########" & chr(13) & "poll 123.456.789.123 with protocol POP3" & chr(13) & "localdomains domain.tld" & chr(13) & "uidl" & chr(13) & "auth password user '" & str_user & "' password 'default_pwdl' is '" & str_email & "' here options no rewrite;" & chr(13) & "smtphost localhost" & chr(13) & "#keep" & chr(13) & "flush",3,"Datensatzkontrolle")
+
+    if answer = "6" then
+       f.WriteLine "######## " & str_email & " ########"
+       f.WriteLine "poll 123.456.789.123 with protocol POP3"
+       f.WriteLine "localdomains domain.tld"
+       f.WriteLine "uidl"
+       f.WriteLine "auth password user '" & str_user & "' password 'default_pwdl' is '" & str_email & "' here options no rewrite;"
+       f.WriteLine "smtphost localhost"
+       f.WriteLine "#keep"
+       f.WriteLine "flush"
+       f.WriteLine ""
+       f.WriteLine ""
+    end if
+
+    if answer = "2" then
+      wscript.quit
+      objExcel.Quit
+    end if
+Next
+
+F.Close
+objExcel.Quit
+
+MsgBox("Das Skript ist beendet")
