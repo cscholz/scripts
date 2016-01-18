@@ -1,0 +1,130 @@
+#----------------------------------------------------------------------
+#Description:
+#Author: Christian Scholz <cscholz@2nibbles4u.de>
+#Created at: Wed May 15 22:16:27 CEST 2007
+#Computer: mail.o-o-s.de
+#System: Debian 4.0 rmc-systems 2.6.12-4-686
+#
+#Copyright (c) 2006 Christian Scholz  All rights reserved.
+#----------------------------------------------------------------------
+
+### Allgemeine Konfiguration
+smtpd_banner = $myhostname ESMTP Service
+biff = no
+append_at_myorigin = no
+append_dot_mydomain = no
+myhostname = mail
+mydestination =
+mynetworks = 127.0.0.0/8, 192.168.30.0/24
+alias_maps = $alias_database
+masquerade_exceptions = root
+masquerade_classes = envelope_sender, header_sender, header_recipient
+
+
+### Nachrichtengrößenbeschränkung 15/30 MB
+#message_size_limit = 30000000
+
+
+### Überwachungseinstellungen
+2bounce_notive_recipient = postmaster
+empty_address_recipient = MAILER-DAEMON
+undisclosed_recipient_header = To: undiscloses-recipients:;
+canonical_maps = hash:/etc/postfix/canonical
+
+
+### für weiter header_/ body_checks: http://www.postfixbuch.de/web/service/checks/
+header_checks = regexp:/etc/postfix/filter/header_checks
+
+virtual_alias_maps = hash:/etc/postfix/adressen/virtual_alias
+canonical_maps = hash:/etc/postfix/canonical
+transport_maps = hash:/etc/postfix/transport
+relayhost=
+relay_domains=
+
+
+### SMTPD Konfiguration
+smtpd_sasl_auth_enable = yes
+smtpd_sasl_local_domain = $myhostname
+smtpd_sasl_security_options = noanonymous
+broken_sasl_auth_clients = yes
+smtpd_helo_required = yes
+smtpd_helo_restrictions =
+smtpd_sender_restrictions =
+smtpd_client_restrictions =
+smtpd_recipient_restrictions =
+        reject_non_fqdn_recipient
+        reject_non_fqdn_sender
+        reject_unknown_sender_domain
+        reject_unknown_recipient_domain
+        permit_mynetworks
+        permit_sasl_authenticated
+        check_client_access hash:/etc/postfix/filter/whitelist_clients
+        check_recipient_access hash:/etc/postfix/filter/whitelist_recipient
+        check_sender_access hash:/etc/postfix/filter/whitelist_sender
+        reject_unauth_destination
+        reject_unlisted_recipient
+	reject_multi_recipient_bounce
+        check_sender_access
+			regexp:/etc/postfix/filter/sender_access
+			hash:/etc/postfix/filter/sender_access.hash
+        reject_non_fqdn_hostname
+	check_client_access pcre:/etc/postfix/filter/dynip
+        reject_rbl_client zen.spamhaus.org
+        reject_rbl_client dul.dnsbl.sorbs.net
+        reject_rbl_client list.dsbl.org
+        reject_rbl_client ix.dnsbl.manitu.net
+        reject_rhsbl_sender dsn.rfc-ignorant.org
+	check_policy_service inet:127.0.0.1:60000
+        permit
+
+
+### Fehlermeldungen
+unknown_local_recipient_reject_code = 550
+
+### Amokläufer stoppen
+smtpd_soft_error_limit = 3
+smtpd_hard_error_limit = 5
+smtpd_error_sleep_time = 10s
+enable_errors_to = yes
+
+### RATE Limit = Anzahl von Emails beschraenken die ein Client senden darf innerhalb
+### einer Minute
+smtpd_client_event_limit =
+anvil_rate_time_unit = 60s
+smtpd_client_connection_rate_limit = 10
+anvil_status_update_time = 1m
+
+### Statusmeldungen fuer den User ueber den Verbleib der Mail
+### Keine Aktion durch User noetig!!!!
+delay_warning_time = 4h
+bounce_queue_lifetime = 1d
+maximal_queue_lifetime = 1d
+
+### Reject Codes
+unknown_address_reject_code = 554
+unknown_hostname_reject_code = 554
+unknown_client_reject_code = 554
+unverified_sender_reject_code = 554
+
+### Connection Timeout
+smtp_connect_timeout = 30s
+smtp_helo_timeout = 300s
+
+### Greylisting Wert
+policy_time_limit = 3600
+
+# Adress-Tests steuern
+address_verify_sender = postmaster@o-o-s.de
+address_verify_map = btree:/etc/postfix/verified_senders
+address_verify_negative_cache = yes
+
+#### Informationen über den Authentifizierten Absender dem Header anfügen
+smtpd_sasl_authenticated_header = yes
+
+### Für Konfigurationstests
+#soft_bounce = yes
+
+#Authentifzierung beim Provider
+smtp_sasl_auth_enable = no
+smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
+smtp_sasl_security_options = noanonymous

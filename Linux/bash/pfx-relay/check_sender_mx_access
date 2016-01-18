@@ -1,0 +1,8 @@
+0.0.0.0/8               REJECT IP address of MX host is a bogus address
+127.0.0.0/8             REJECT IP address of MX host is a loopback address
+224.0.0.0/12            REJECT IP address of MX host is a multicast address
+255.0.0.0/8             REJECT IP address of MX host is a bogus address
+10.0.0.0/8              REJECT IP address of MX host is a RFC1918 address
+169.254.0.0/16          REJECT IP address of MX host is a RFC1918 address
+192.0.2.0/24            REJECT IP address of MX host is a RFC1918 address
+240.0.0.0/12            REJECT IP address of MX host is a reserved address

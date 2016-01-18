@@ -1,0 +1,9 @@
+#########################################################################################
+# Angabe von eMail Adressen/Domains die expliziet erlaubt oder geblockt werden sollen
+# SMTP reject Codes: http://o-o-s.de/?p=436
+# blocked@domain.tld                    REJECT Nachricht...
+# blocked@domain.tld                    551 Nachricht...
+# allow@doimain.tld                     OK
+# domain.tld                            OK
+#########################################################################################
+

@@ -1,0 +1,4 @@
+/\.cc$/					REJECT No Mail from *.cc Domain
+/\.br$/					REJECT No Mail from *.br we do nox accept email from brasilia
+/\.cz$/					REJECT No Mail from *.cz only German Email are allowed
+/\.ru$/					REJECT No Mail from *.ru only German Email are allowed

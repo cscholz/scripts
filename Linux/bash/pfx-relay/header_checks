@@ -1,0 +1,74 @@
+#/(filename|name)=".*\.(pif|bat|exe|com|rar|scr)"/ Reject Sie schickten uns eine Email mit einem Anhang einer der folgenden Endungen: pif|bat|rar|exe|com|scr. Aus Sicherheitsgrünehmen wir diese Emails nicht an.Wir empfehlen Ihnen den Anhang umzubennen und in ein passwortgeschü File zu packen. Teilen Sie uns hierfü Passwort mit. Wir bitten um Ihr Verstäniss. M
+/^Subject:Internet Sic Codes/  REJECT
+/^Subject:FICKEN12/     REJECT
+# Encourage good Netiquette
+#/^X-Mailer:Microsoft Outlook/  REJECT Sorry, we don't accept mail from LookOut!
+/^Subject:.*4,8 Mill\. Osteuropaeer durch Fischer-Volmer Erlass/    REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Auf Streife durch den Berliner Wedding/                 REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Auslaender bevorzugt/                                   REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Auslaenderpolitik/                                      REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Deutsche werden kuenftig beim Arzt abgezockt/           REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Du wirst zum Sklaven gemacht\!\!\!/                     REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Graeberschaendung auf bundesdeutsche Anordnung/         REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Hier sind wir Lehrer die einzigen Auslaender/           REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Paranoider Deutschenmoerder kommt in Psychiatrie/       REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Tuerkei in die EU/                                      REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*Verbrechen der deutschen Frau/                          REJECT Nazi Spam 15.05.2005 RHI
+/^Subject:.*geiler sex/                                            REJECT SEX  Spam 01.11.2005 RHI
+/^Subject:.*save money/                                            REJECT SAVE Spam 01.11.2005 RHI
+/^Subject:.*generic drugs/                                         REJECT Generic Spam 01.11.2005 RHI
+/^Subject:.Deutsche Bank/                                          REJECT Pisher 03.11.2005 RHI
+/^Subject:.*Make your opinions Count/   REJECT 153
+/^Subject:.*The Bull Market That Never Ends/ REJECT 154
+/^Subject:.*agreement of service & road side/ REJECT 155
+/^Subject:.*Capital Markets Are Hot/ REJECT 160
+/^Subject:.*Stock Radar/ REJECT 161
+/^Subject:.*new photos from my party!/ REJECT   180
+/^Subject:.*Confirm 1000 dollar Winter Heating offer/ REJECT 181
+/^Subject:.*Penis Growth Extreme/ REJECT 182
+/^Subject:.*Volksbank*/ REJECT 183
+/^Subject:.*Are you being over charged/ REJECT 184
+/^Subject:.*Die wichtige Information/ REJECT 184
+/^Subject:.*HELLO/ REJECT 18
+/^Subject:.*This carnival will/ REJECT 186
+# spamware mailers      165
+/^X-(Advertisement|\d|UltraMail|Bulkmail):/ REJECT      166
+/^(Received|Message-Id|X-(Mailer|Sender)):.*\b(E-Broadcaster|Emailer Platinum|eMarksman|Extractor|e-Merge|from stealth[^.]|Global Messenger|GroupMaster|Mailcast|MailKing|Match10|MassE-Mail|massmail\.pl|News Breaker|Powermailer|Quick Shot|Ready Aim Fire|WindoZ|WorldMerge|Yourdora)\b/ REJECT Regel 167
+/^X-Mailer:.*\b(Aristotle|Avalanche|Blaster|Bomber|DejaVu|eMerge|Extractor|UltraMail|Sonic|Floodgate|GeoList|Mach10|MegaPro|Aureate|MultiMailer|Bluecom|Achi-Kochi Mail|Direct Email|Andrew's SuperCool Blastoise|MailerGear|Advanced Mass Sender|SpireMail|MailWorkZ|UltimDBMail|Mabry)\b/ REJECT Regel 168
+/^X-EM-(Version|Registration):/ REJECT  169
+/^X-AD2000-(Serial|Register):/ REJECT   170
+/^Advanced Direct Remailer/ REJECT      171
+/^(To|From|Cc|Reply-To):.*@sexyfun.net/ REJECT  178
+#/^Content-Disposition: Multipart message/ REJECT       179
+/^Received:.*\.{50,}/ REJECT    183
+/^(Content-Type:.*|\s+)charset\s*=\s*"?(euc-kr|ks_c_5601-1987)"?/ REJECT        199
+/^Subject:.*=\?(euc-kr|ks_c_5601-1987)\?/ REJECT        200
+/^Subject:.Liebe freunde, es tropft wieder/ REJECT 201
+/^Subject:.Die Information fü Kunden/ REJECT 20
+/^content-(type|disposition):.*name[[:space:]]*=.*\.(exe|vbs)/ REJECT Bad attachment file name extension: $2
+
+
+/^Subject:.*Ermittlungsverfahren_wurde_eingeleitet/   REJECT Sober.U #2
+/^Subject:.*Sehr_geehrter_Ebay-Kunde/                 REJECT Sober.U #3
+/^Subject:.*Sehr geehrter Ebay-Kunde/                 REJECT Sober.U #4
+/^Subject:.*Ermittlungsverfahren wurde eingeleitet/   REJECT Sober.U #5
+/^Subject:.*Sie besitzen Raubkopien/                  REJECT Sober.U #6
+/^Subject:.*Ihr_Passwort/                             REJECT Sober.U #7
+/^Subject:.Sie.besitzen.Raubkopien$/   REJECT subject indicates SOBER Virus
+/^Subject:.RTL:.Wer.wird.Millionaer$/  REJECT subject indicates SOBER Virus
+/^Subject:.Ermittlungsverfahren.wurde.eingeleitet$/ REJECT subject indicates SOBER Virus
+/^Subject:.Sehr.geehrter.Ebay-Kunde$/   REJECT subject indicates SOBER Virus
+/^Subject:.*Ihr_Passwort/                             REJECT Sober.U #7
+/^Subject:.Sie.besitzen.Raubkopien$/   REJECT subject indicates SOBER Virus
+/^Subject:.RTL:.Wer.wird.Millionaer$/  REJECT subject indicates SOBER Virus
+/^Subject:.Ermittlungsverfahren.wurde.eingeleitet$/ REJECT subject indicates SOBER Virus
+/^Subject:.Sehr.geehrter.Ebay-Kunde$/   REJECT subject indicates SOBER Virus
+/^Subject:.Ihr.Passwort$/              REJECT subject indicates SOBER Virus
+/^Subject:.Account.Information$/       REJECT subject indicates SOBER Virus
+/^Subject:.SMTP.Mail.gescheitert$/     REJECT subject indicates SOBER Virus
+/^Subject:.Mailzustellung.wurde.unterbrochen$/  REJECT subject indicates SOBER Virus
+/^Subject:.Wichtige Mitteilung/ REJECT Mail indicates Spam
+/^Subject:.Online Pharmaceutical/ REJECT NO DRUGS
+/^Subject:.Job offers/ REJECT REGEL 101
+
+
