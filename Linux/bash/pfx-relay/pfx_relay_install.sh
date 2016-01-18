@@ -4,7 +4,7 @@
 
 ## Sicherung alter Dateien
   dialog --title "Postfix-Relay-Server Setup" --msgbox "Willkommen beim Postfix-Relay-Server Setup\n\n\nAls erstes werden jetzt die Pakete postfix, postfix-pcre, postfix-tls, postgrey  installiert.
-  \nSobald der Postfix Einrichtungsdialog kommt, w▒hlen Sie bitte keine Konfiguration" 20 50
+  \nSobald der Postfix Einrichtungsdialog kommt, wählen Sie bitte keine Konfiguration" 20 50
   clear
   apt-get install -y postfix-pcre postfix-tls postfix postgrey sasl2-bin libsasl2-modules
   mv /etc/postfix/main.cf /etc/postfix/main.cf.bak
