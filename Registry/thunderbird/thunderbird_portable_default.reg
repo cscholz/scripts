@@ -1,0 +1,24 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Clients\Mail\Mozilla Thunderbird\shell\open\command]
+@="\"E:\\Program Files\\ThunderbirdPortable\\ThunderbirdPortable.exe\" -mail"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Clients\Mail\Mozilla Thunderbird\shell\properties]
+@="Thunderbird &Options"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Clients\Mail\Mozilla Thunderbird\shell\properties\command]
+@="\"E:\\Program Files\\ThunderbirdPortable\\ThunderbirdPortable.exe\" -options"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\mailto\DefaultIcon]
+@="E:\\Program Files\\ThunderbirdPortable\\App\\thunderbird\\thunderbird.exe,0"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\mailto\shell\open\command]
+@="\"E:\\Program Files\\ThunderbirdPortable\\ThunderbirdPortable.exe\" \"%1\""
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Clients\Mail]
+@="Mozilla Thunderbird"
+
+; This fixes MAPI
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{29F458BE-8866-11D5-A3DD-00B0D0F3BAA7}\LocalServer32]
+@="E:\\Program Files\\ThunderbirdPortable\\ThunderbirdPortable.exe /MAPIStartUp"
