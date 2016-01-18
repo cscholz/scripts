@@ -4,7 +4,7 @@
 
 ## Sicherung alter Dateien
   dialog --title "Postfix-Relay-Server Setup" --msgbox "Willkommen beim Postfix-Relay-Server Setup\n\n\nAls erstes werden jetzt die Pakete postfix, postfix-pcre, postfix-tls, postgrey  installiert.
-  \nSobald der Postfix Einrichtungsdialog kommt, wählen Sie bitte keine Konfiguration" 20 50
+  \nSobald der Postfix Einrichtungsdialog kommt, wâ–’hlen Sie bitte keine Konfiguration" 20 50
   clear
   apt-get install -y postfix-pcre postfix-tls postfix postgrey sasl2-bin libsasl2-modules
   mv /etc/postfix/main.cf /etc/postfix/main.cf.bak
@@ -15,25 +15,25 @@
 
 ## postfix einrichten
   cd /etc/postfix
-  wget -q http://87.98.241.120/files/postfix-relay/main.cf
-  wget -q http://87.98.241.120/files/postfix-relay/master.cf
-  wget -q http://87.98.241.120/files/postfix-relay/Begruessung.txt
-  wget -q http://87.98.241.120/files/postfix-relay/mailuser.sh
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/main.cf
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/master.cf
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/Begruessung.txt
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/mailuser.sh
   chmod +x /etc/postfix/mailuser.sh
   mv mailuser.sh /usr/local/bin/
   mkdir /etc/postfix/adressen > /dev/null 2>&1
   cd /etc/postfix/adressen
   mkdir /etc/postfix/filter > /dev/null 2>&1
   cd /etc/postfix/filter
-  wget -q http://87.98.241.120/files/postfix-relay/check_sender_mx_access
-  wget -q http://87.98.241.120/files/postfix-relay/dialups.pcre
-  wget -q http://87.98.241.120/files/postfix-relay/header_checks
-  wget -q http://87.98.241.120/files/postfix-relay/sender_access
-  wget -q http://87.98.241.120/files/postfix-relay/sender_access.hash
-  wget -q http://87.98.241.120/files/postfix-relay/whitelist_clients
-  wget -q http://87.98.241.120/files/postfix-relay/whitelist_recipient
-  wget -q http://87.98.241.120/files/postfix-relay/whitelist_sender
-  wget -q http://87.98.241.120/files/postfix-relay/dynip
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/check_sender_mx_access
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/dialups.pcre
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/header_checks
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/sender_access
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/sender_access.hash
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/whitelist_clients
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/whitelist_recipient
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/whitelist_sender
+  wget -q https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/pfx-relay/dynip
   postmap /etc/postfix/filter/sender_access
   postmap /etc/postfix/filter/whitelist_clients
   postmap /etc/postfix/filter/whitelist_recipient
@@ -112,5 +112,4 @@
   postmap /etc/postfix/canonical
   postmap /etc/postfix/transport
 /etc/init.d/postfix start
-
 
