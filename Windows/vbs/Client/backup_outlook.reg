@@ -1,0 +1,50 @@
+'===================
+Set objShell = CreateObject("WScript.Shell")
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+
+arrRegPaths = Array( _
+	"HKEY_CURRENT_USER\Software\Policies\Microsoft\Office\15.0\Common\Roaming", _
+	"HKEY_CURRENT_USER\Software\Microsoft\Office\15.0\Outlook", _
+	"HKEY_CURRENT_USER\Software\Policies\Microsoft\Office\15.0\Outlook\Security", _
+	"HKEY_CURRENT_USER\Software\Microsoft\Office\15.0\Common\TrustCenter", _
+	"HKEY_CURRENT_USER\Software\Microsoft\Office\15.0\Common\Toolbars\Outlook", _
+	"HKEY_CURRENT_USER\Software\Microsoft\Shared Tools\Outlook", _
+	"HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Office\15.0\Outlook", _
+	"HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Office\15.0\Common", _
+	"HKEY_LOCAL_MACHINE\Software\Wow6432Node\Policies\Microsoft\Office\15.0\Outlook\", _
+	"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Office\15.0\Common\General"_
+      )
+
+Const intForReading = 1
+Const intUnicode = -1
+
+strFileName = objShell.ExpandEnvironmentStrings("%UserProfile%") & "\Desktop\RegKeys.reg"
+
+
+If (objFSO.FileExists(strFileName)) Then 
+	WScript.quit
+End If
+
+Set objRegFile = objFSO.CreateTextFile(strFileName, True, True)
+objRegFile.WriteLine "Windows Registry Editor Version 5.00"
+
+For Each strRegPath In arrRegPaths
+      strCommand = "cmd /c REG EXPORT " & strRegPath & " " & Replace(strRegPath, "\", "_") & ".reg"
+      objShell.Run strCommand, 0, True
+      If objFSO.FileExists(Replace(strRegPath, "\", "_") & ".reg") = True Then
+            'WScript.Sleep 1000 ' Wait one second to give the file time to close
+            Set objInputFile = objFSO.OpenTextFile(Replace(strRegPath, "\", "_") & ".reg", intForReading, False, intUnicode)
+            If Not objInputFile.AtEndOfStream Then
+                  objInputFile.SkipLine
+                  objRegFile.Write objInputFile.ReadAll
+            End If
+            objInputFile.Close
+            Set objInputFile = Nothing
+            objFSO.DeleteFile Replace(strRegPath, "\", "_") & ".reg", True
+      End If
+Next
+
+objRegFile.Close
+Set objRegFile = Nothing
+
+wscript.echo "Finished."
