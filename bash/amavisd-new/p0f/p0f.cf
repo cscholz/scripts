@@ -1,0 +1,20 @@
+header L_P0F_OS_WINDOWSXP   X-Amavis-OS-Fingerprint =~ /^Windows XP/
+score  L_P0F_OS_WINDOWSXP   3.5
+header L_P0F_OS_WINDOWS_OTHER X-Amavis-OS-Fingerprint =~ /^Windows(?! XP)/
+score  L_P0F_OS_WINDOWS_OTHER 1.7
+header L_P0F_OS_UNKOWN  X-Amavis-OS-Fingerprint =~ /^UNKNOWN/
+score  L_P0F_OS_UNKOWN  0.8
+header L_P0F_OS_LINUX  X-Amavis-OS-Fingerprint =~ /^Linux/
+score  L_P0F_OS_LINUX  -0.3
+header L_P0F_OS_UNIX  X-Amavis-OS-Fingerprint =~ /^((Free|Open|Net)BSD)|Solaris|HP-UX|Tru64/
+score  L_P0F_OS_UNIX  -1.0
+
+header L_P0F_D_1_4 X-Amavis-OS-Fingerprint =~ /\bdistance [1-4](?![0-9])/
+header L_P0F_D_5_6 X-Amavis-OS-Fingerprint =~ /\bdistance [5-6](?![0-9])/
+header L_P0F_D_7_9 X-Amavis-OS-Fingerprint =~ /\bdistance [7-9](?![0-9])/
+header L_P0F_D_15_25 X-Amavis-OS-Fingerprint =~ /\bdistance [15-25](?![0-9])/
+
+score  L_P0F_D_1_4 -0.7
+score  L_P0F_D_5_6 -0.5
+score  L_P0F_D_7_9 -0.3
+score  L_P0F_D_15_25 0.3
