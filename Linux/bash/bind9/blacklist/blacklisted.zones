@@ -1,0 +1,13 @@
+$TTL 3600
+@       IN      SOA      ns1.domain.tld. postmaster.domain.tld. (
+                                2143       ; serial
+                                7200       ; refresh (1 hour)
+                                900        ; retry (15 minutes)
+                                1209600    ; expire (2 weeks)
+                                3600       ; minimum (1 hours)
+                                );
+        NS      localhost.localdomain.
+        TXT     Domain is blocked!!
+;       A       127.0.0.1
+;       AAAA    ::1
+
