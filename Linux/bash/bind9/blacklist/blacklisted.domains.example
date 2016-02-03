@@ -1,0 +1,9 @@
+zone "2dollarfix.com" {type master; file "blacklisted.zones";};
+zone "2domeinold.ru" {type master; file "blacklisted.zones";};
+zone "2jm.com" {type master; file "blacklisted.zones";};
+zone "2m398bu923-rv-read.com" {type master; file "blacklisted.zones";};
+zone "2m5fi5q2dk68yelx8k.cn" {type master; file "blacklisted.zones";};
+zone "2mdn.net" {type master; file "blacklisted.zones";};
+zone "2mic.ma" {type master; file "blacklisted.zones";};
+zone "2mmb.com" {type master; file "blacklisted.zones";};
+
