@@ -1,0 +1,11 @@
+rmdomainblock()
+{
+        if [ ! -z "$1" ] ; then
+                echo Unblock domain $1 from bind
+                sed "/$1/d" -i /etc/bind/blacklisted.domains
+                service bind9 restart
+        else
+                echo "!! Need domain to handle"
+        fi
+}
+
