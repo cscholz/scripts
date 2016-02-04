@@ -1,0 +1,20 @@
+$ORIGIN .
+$TTL 2560       ; 42 minutes 40 seconds
+home.local              IN SOA  ns.home.local. postmaster.home.local. (
+                                1          ; serial
+                                3600       ; refresh (1 hour)
+                                900        ; retry (15 minutes)
+                                1209600    ; expire (2 weeks)
+                                10800      ; minimum (3 hours)
+                                )
+$TTL 10800      ; 3 hours
+                        NS      ns.home.local.
+                        A       192.168.10.1
+                        KEY     512 3 157 (
+                                HvGQLUSHIWN17T0hCmlrGm1dRhcfLgBcar3cVAngED4L
+                                4Q==
+                                ) ; key id = 33608
+$ORIGIN home.local.
+$TTL 10800      ; 3 hours
+ns                      A       192.168.10.1
+router                  A       192.168.10.1
