@@ -1,0 +1,47 @@
+'Option Explicit Off
+Imports System.DirectoryServices
+Imports System.Diagnostics
+Imports System.Runtime.InteropServices
+Imports ActiveDs
+Imports System.Threading
+Module Module1
+    Sub Main()
+        Dim DeEntry As DirectoryEntry
+        Dim groupcoll As New DirectoryEntry("WinNT://.")
+        For Each DeEntry In groupcoll.Children
+            If DeEntry.Name = "Administratoren" Then
+                EnumGroupMembers(DeEntry.Name)
+            End If
+            'If DeEntry.SchemaEntry.Name = "Group" Then
+            '   EnumGroupMembers(DeEntry.Name)
+            'End If
+        Next
+        Thread.Sleep(50000)
+    End Sub
+　
+    Public Sub EnumGroupMembers(ByVal group As String)
+        Dim strUsername, strGroupName As String
+        Dim aryUsername, aryGroupName As Array
+        Dim MembersCollection As IADsMembers
+        Dim GroupToEnum As New DirectoryEntry("WinNT://./" & group & ",group")
+        MembersCollection = GroupToEnum.Invoke("Members")
+        Dim filter As System.Object() = {"user"}
+        MembersCollection.Filter = filter
+        Dim user As IADsUser
+        Dim grp As IADsGroup
+        For Each user In MembersCollection
+            strUsername = LCase(user.ADsPath)
+            aryUsername = strUsername.Split("/")
+            Console.WriteLine(strUsername)
+            Console.WriteLine(aryUsername(2) & "\" & aryUsername(3))
+        Next
+        Dim grpfilter As System.Object() = {"group"}
+        MembersCollection.Filter = grpfilter
+        For Each grp In MembersCollection
+            'Console.WriteLine(LCase(grp.ADsPath))
+            strGroupName = LCase(grp.ADsPath)
+            aryGroupName = strGroupName.Split("/")
+            Console.WriteLine(aryGroupName(2) & "\" & aryGroupName(3))
+        Next
+    End Sub
+End Module
