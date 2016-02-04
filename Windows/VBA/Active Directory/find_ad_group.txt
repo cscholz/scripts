@@ -1,3 +1,5 @@
+' https://o-o-s.de/3755/3755
+
 Imports System.DirectoryServices.AccountManagement
 Imports System.Threading
 Module Module1
