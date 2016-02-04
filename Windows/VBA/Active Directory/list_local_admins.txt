@@ -1,3 +1,5 @@
+' https://o-o-s.de/vb-list_local_admins/3762
+
 'Option Explicit Off
 Imports System.DirectoryServices
 Imports System.Diagnostics
