@@ -1,0 +1,63 @@
+Public Function NBLookup(lookupVal As String, Optional addressOpt As Integer) As String
+   Const ADDRESS_LOOKUP = 1
+   Const NAME_LOOKUP = 2
+   Const AUTO_DETECT = 0
+   On Error Resume Next
+   
+   'Skip everything if the field is blank
+   If lookupVal <> "" Then
+        Dim oFSO As Object, oShell As Object, oTempFile As Object
+        Dim sLine As String, sFilename As String
+        Dim intFound As Integer
+        Set oFSO = CreateObject("Scripting.FileSystemObject")
+        Set oShell = CreateObject("Wscript.Shell")
+        
+        'Handle the addresOpt operand
+        'Regular Expressions are used to complete a substring match for an IP Address
+        'If an IP Address is found, a DNS Name Lookup will be forced
+        If addressOpt = AUTO_DETECT Then
+            ipLookup = FindIP(lookupVal)
+            If ipLookup = "" Then
+                addressOpt = ADDRESS_LOOKUP
+            Else
+                addressOpt = NAME_LOOKUP
+                lookupVal = ipLookup
+            End If
+        'Do a regular expression substring match for an IP Address
+        ElseIf addressOpt = NAME_LOOKUP Then
+            lookupVal = FindIP(lookupVal)
+        End If
+        
+        'Run the nslookup command
+        sFilename = oFSO.GetTempName
+        oShell.Run "cmd /c nblookup " & lookupVal & " > " & sFilename, 0, True
+        Set oTempFile = oFSO.OpenTextFile(sFilename, 1)
+        Do While oTempFile.AtEndOfStream <> True
+            sLine = oTempFile.Readline
+            cmdStr = cmdStr & Trim(sLine) & vbCrLf
+        Loop
+        oTempFile.Close
+        oFSO.DeleteFile (sFilename)
+        
+        'Process the result
+        intFound = InStr(1, cmdStr, "Unique", vbTextCompare)
+        If intFound = 0 Then
+            NBLookup = "Not Found"
+            Exit Function
+        ElseIf intFound > 0 Then
+            'TODO: Cleanup with RegEx
+            If addressOpt = ADDRESS_LOOKUP Then
+                loc1 = InStr(intFound, cmdStr, "Address:", vbTextCompare) + InStr(intFound, cmdStr, "Addresses:", vbTextCompare)
+                loc2 = InStr(loc1, cmdStr, vbCrLf, vbTextCompare)
+                namestr = Trim(Mid(cmdStr, loc1 + 9, loc2 - loc1 - 8))
+            ElseIf addressOpt = NAME_LOOKUP Then
+                loc1 = InStr(intFound, cmdStr, "Name:", vbTextCompare)
+                loc2 = InStr(loc1, cmdStr, vbCrLf, vbTextCompare)
+                namestr = Trim(Mid(cmdStr, loc1 + 5, loc2 - loc1 - 5))
+            End If
+        End If
+        NBLookup = Replace(namestr, vbLf, "")
+    Else
+        NBLookup = "N/A"
+    End If
+End Function
