@@ -1,0 +1,23 @@
+Imports System.DirectoryServices.AccountManagement
+Imports System.Threading
+Module Module1
+    Private Function CheckADGroupAvailibility(strGroupName As String)
+        Try
+            Dim context As New PrincipalContext(ContextType.Domain)
+            ' find a user
+            'Dim user As UserPrincipal = UserPrincipal.FindByIdentity(context, "Christian.Scholz")
+            Dim group As GroupPrincipal = GroupPrincipal.FindByIdentity(context, strGroupName)
+            If group IsNot Nothing Then
+                Return "1"
+            Else
+                Return "0"
+            End If
+        Catch ex As Exception
+            Return ex.Message
+        End Try
+    End Function
+    Sub Main()
+        Console.WriteLine(CheckADGroupAvailibility("ADGroupToCheck"))
+        Thread.Sleep(5000)
+    End Sub
+End Module
