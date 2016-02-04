@@ -1,0 +1,41 @@
+' https://o-o-s.de/vb-add_user_to_local_admins/3742
+
+Imports System.DirectoryServices
+Module Module1
+    Private Function AddToLocalGroup(strDomain As String, strLocalAdminGroup As String, strIdentName As String, strIdentType As String)
+        Try
+            Dim PCNAME As String = "."
+            'Dim localusrname As String = UserNameTxtBx.Text
+            Dim LCL As New DirectoryEntry("WinNT://" & PCNAME & ",computer")
+            Dim DOM As New DirectoryEntry("WinNT://" & strDomain)
+            Dim DOMUSR As DirectoryEntry = DOM.Children.Find(strIdentName, strIdentType)
+            Dim LCLGRP As DirectoryEntry = LCL.Children.Find(strLocalAdminGroup, "group")
+            Console.WriteLine(DOMUSR.Path.ToString)
+            LCLGRP.Invoke("Add", New Object() {DOMUSR.Path.ToString})
+            Return "The " & strIdentType & " """ & strDomain & "\" & strIdentName & """ has been added to .\" & strLocalAdminGroup
+        Catch ex As Exception
+            Return ex.Message
+        End Try
+    End Function
+    Private Function RemoveFromLocalGroup(strDomain As String, strLocalAdminGroup As String, strIdentName As String, strIdentType As String)
+        Try
+            Dim PCNAME As String = "."
+            'Dim localusrname As String = UserNameTxtBx.Text
+            Dim LCL As New DirectoryEntry("WinNT://" & PCNAME & ",computer")
+            Dim DOM As New DirectoryEntry("WinNT://" & strDomain)
+            Dim DOMUSR As DirectoryEntry = DOM.Children.Find(strIdentName, strIdentType)
+            Dim LCLGRP As DirectoryEntry = LCL.Children.Find(strLocalAdminGroup, "group")
+            Console.WriteLine(DOMUSR.Path.ToString)
+            LCLGRP.Invoke("Remove", New Object() {"WinNT://" & strDomain & "/" & strIdentName})
+            Return "The " & strIdentType & " """ & strDomain & "\" & strIdentName & """ has been removed from .\" & strLocalAdminGroup
+        Catch ex As Exception
+            Return ex.Message
+        End Try
+    End Function
+    Sub Main()
+        ' add domain user/group
+        'Console.WriteLine("Return-Code: " & AddToLocalGroup("nwtraders.msft", "Administratoren", "GroupToAdd", "group"))
+        ' remove domain user/group
+        'Console.WriteLine("Return-Code: " & RemoveFromLocalGroup("nwtraders.msft", "Administratoren", "UserToAdd", "user"))
+    End Subp
+End Module
