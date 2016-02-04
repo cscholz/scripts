@@ -1,3 +1,5 @@
+' https://o-o-s.de/vb-get_local_admingroup/3758
+
 'Option Explicit Off
 Imports System.Management
 Imports System.Threading
