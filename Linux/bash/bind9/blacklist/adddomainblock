@@ -1,13 +1,19 @@
 adddomainblock()
 {
-        if [ ! -z "$1" ] ; then
-                str_date=$(date +%Y"-"%m"-"%d",")
-                echo Blocking domain $i with bind
-                sed "/$1/d" -i /etc/bind/blacklisted.domains
-                echo "//$str_date $1" >> /etc/bind/blacklisted.domains
-                echo zone \"$1\" \{type master\; file \"blacklisted.zones\"\;}\; >> /etc/bind/blacklisted.domains
-                service bind9 restart
+    if [ ! -z "$2" ] ; then
+        comment=", $2"
+    else
+        comment=""
+    fi
+
+    if [ ! -z "$1" ] ; then
+        str_date=$(date +%Y"-"%m"-"%d",")
+        echo Blocking domain $i with bind
+        sed "/$1/d" -i /etc/bind/blacklisted.domains
+        echo "//$str_date $1$comment" >> /etc/bind/blacklisted.domains
+        echo zone \"$1\" \{type master\; file \"blacklisted.zones\"\;}\; >> /etc/bind/blacklisted.domains
+            service bind9 restart
         else
-                echo "!! Need domain to handle"
+            echo "!! Need domain to handle"
         fi
 }
