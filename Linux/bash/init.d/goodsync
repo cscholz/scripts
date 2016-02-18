@@ -1,0 +1,69 @@
+#!/bin/bash -e
+### BEGIN INIT INFO
+# Provides:          downtimed
+# Required-Start:    $local_fs $network $syslog
+# Required-Stop:     $local_fs $network $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start/stop apache2 web server
+### END INIT INFO
+
+PIDFILE="/var/run/goodsync.pid"
+
+case "$1" in
+  start)
+    if [ -f $PIDFILE ]; then
+      echo -e '[ \E[36;31m'"\033\ok\033[0m ] Starting GoodSync Service: goodsync (already running)"
+      logger "Starting GoodSync Service: goodsync (already running)"
+   fi
+
+    if [ ! -f $PIDFILE ]; then
+     echo -e '[ \E[36;32m'"\033\ok\033[0m ] Starting GoodSync Service: goodsync"
+     logger "Starting GoodSync Service: goodsync"
+     start-stop-daemon --start --quiet --pidfile "$PIDFILE" --make-pidfile --chuid goodsync --oknodo --exec /opt/goodsync/gs-server -- '/service=goodsync:goodsync' > /dev/null 2>&1
+
+     pid=$(cat $PIDFILE )
+     echo $(expr $pid + 1) > $PIDFILE
+   fi
+;;
+  stop)
+    if [ ! -f $PIDFILE ]; then
+      echo -e '[ \E[36;31m'"\033\ok\033[0m ] Stopping GoodSync Service: goodsync (not running)"
+      logger "Stopping GoodSync Service: goodsync (not running)"
+    else
+      echo -e '[ \E[36;32m'"\033\ok\033[0m ] Stopping GoodSync Service: goodsync"
+      logger "Stopping GoodSync Service: goodsync"
+      start-stop-daemon --stop --signal TERM --quiet --pidfile "$PIDFILE"
+      rm $PIDFILE
+  fi
+    ;;
+  restart)
+      $0 stop
+      $0 start
+    ;;
+  status)
+#    echo -n "goodsync Status: "
+#    /bin/ps aux |grep goodsync | egrep -v '(grep|tail|/bin/)'
+
+  if [ -f "$PIDFILE" ]; then
+    pid=$(cat $PIDFILE)
+    else
+    pid="x"
+  fi
+
+  if [ `pidof gs-server|grep "$pid"|wc -l` -ne 0 ] ; then
+    echo -e '[ \E[36;32m'"\033\ok\033[0m ] goodsync is runnung"
+    exit 0
+  else
+    echo -e '[ \E[36;32m'"\033\ok\033[0m ] goodsync is not runnung"
+    exit 3
+  fi
+
+    ;;
+  *)
+    echo "Fehlerhafter Aufruf"
+    echo "Syntax: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+
