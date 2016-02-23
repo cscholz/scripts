@@ -1,0 +1,30 @@
+# Fail2Ban configuration file
+#
+# Author: Yaroslav Halchenko
+#
+# $Revision$
+#
+
+[Definition]
+
+# Option:  failregex
+# Notes.:  regex to match the password failures messages in the logfile. The
+#          host must be matched by a group named "host". The tag "<HOST>" can
+#          be used for standard IP/hostname matching and is only an alias for
+#          (?:::f{4,6}:)?(?P<host>[\w\-.^_]+)
+# Values:  TEXT
+#
+# failregex = sshd(?:\[\d+\])?: Did not receive identification string from <HOST>$
+failregex = ^.*sshd\[[0-9]+\]: Invalid user .* from <HOST>$
+            ^.*sshd\[[0-9]+\]: Did not receive identification string from <HOST>$
+            ^.*sshd\[[0-9]+\]: Bad protocol version identification .* from <HOST> port \d+$
+            ^.*sshd\[[0-9]+\]: Received disconnect from <HOST>: 11: .*$
+            ^.*sshd\[[0-9]+\]: Connection from <HOST> port \d+.*<SKIPLINES>.*fatal: Read from socket failed: Connection reset by peer.*$
+            ^.*sshd\[[0-9]+\]: Connection from <HOST> port \d+.*<SKIPLINES>.*Disconnecting: Too many authentication failures for.*$
+
+
+# Option:  ignoreregex
+# Notes.:  regex to ignore. If this regex matches, the line is ignored.
+# Values:  TEXT
+#
+ignoreregex = 
