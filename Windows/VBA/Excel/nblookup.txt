@@ -61,3 +61,36 @@ Public Function NBLookup(lookupVal As String, Optional addressOpt As Integer) As
         NBLookup = "N/A"
     End If
 End Function
+
+
+
+Function FindIP(strTest As String) As String
+    Dim RegEx As Object
+    Dim valid As Boolean
+    Dim Matches As Object
+    Dim i As Integer
+    Set RegEx = CreateObject("VBScript.RegExp")
+    
+    RegEx.Pattern = "\b(?:\d{1,3}\.){3}\d{1,3}\b"
+    valid = RegEx.test(strTest)
+    If valid Then
+        Set Matches = RegEx.Execute(strTest)
+        FindIP = Matches(0)
+    Else
+        FindIP = ""
+    End If
+End Function
+
+
+Public Sub RunNBLookup()
+Dim oArea As Range
+Dim oCell As Range
+On Error Resume Next
+
+For Each oArea In Selection.Areas
+    For Each oCell In oArea.Cells
+        Cells(oCell.Row, oCell.Column + 2) = NBLookup(oCell.Value)
+        ActiveSheet.Cells(oCell.Row, oCell.Column + 1).Select
+    Next
+Next
+End Sub
