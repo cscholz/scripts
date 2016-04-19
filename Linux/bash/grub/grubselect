@@ -1,5 +1,35 @@
 #!/bin/bash
-file="/boot/grub/grub.cfg"
+
+function grub-ident {
+
+  if [ -f "/boot/grub/grub.cfg" ]; then
+    echo "> Grub found!"
+    file="/boot/grub/grub.cfg"
+    grub_reboot=$(which grub-reboot)
+    grub_editenv=$(which grub-editenv)
+    update_grub=$(which update-grub)
+    grub_reboot=$(which grub-reboot)
+    grub_set_default=$(which grub-set-default)
+    grub_editenv=$(which grub-editenv)
+
+  elif  [ -f "/boot/grub2/grub.cfg" ]; then
+    echo "> Grub2 found!"
+    file="/boot/grub2/grub.cfg"
+    grub_reboot=$(which grub2-reboot)
+    grub_editenv=$(which grub2-editenv)
+    update_grub="$(which grub2-mkconfig) -o $file"
+    grub_reboot=$(which grub2-reboot)
+    grub_set_default=$(which grub2-set-default)
+    grub_editenv=$(which grub2-editenv)
+  else
+    echo "No suitable grub found. Abort!"
+    exit
+  fi
+}
+
+
+
+
 # choice counter
 i=0
 # entry counter
@@ -7,6 +37,8 @@ j=0
 
 # counter for sub entries 0/1
 submenu=0
+
+grub-ident
 
 echo -e "Choice\tEntry\tName"
 while read -r line
@@ -51,24 +83,18 @@ read sel_entry
 read -r -p "Boot kernel once or permanent? [o/p] " response
 case $response in
     [oO])
-        open
-        grub-reboot "${array[$sel_entry]}"
-        #grub-editenv list
-        echo "Finished."
+        $grub_reboot "${array[$sel_entry]}"
+        $grub_editenv list
         ;;
     [pP])
-        open
         sed -i 's/GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/g' /etc/default/grub
-        echo "Writing grub files..."
-        update-grub > /dev/null 2>&1
-        grub-set-default "${array[$sel_entry]}"
-        #grub-editenv list
-        echo "Finished."
+        $update_grub
+        $grub_set_default "${array[$sel_entry]}"
+        $grub_editenv list
         ;;
     *)
         echo "Wrong selection. Aborted."
         exit
         ;;
 esac
-close
 
