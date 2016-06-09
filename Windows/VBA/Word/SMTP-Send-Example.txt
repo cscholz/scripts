@@ -1,0 +1,77 @@
+Private Sub SUBMIT_Click()
+
+'*** DECLARATIONS ***
+Dim FSO As Object
+
+strFile = "Weekly Report"
+strMailRecipient = "recipient@domain.tld"
+strMailFrom = "generic-sender@domain.tld"
+strMailServer = "smtp.domain.tld"
+strFileTemp = Str(Int(Rnd() * 1234567))
+
+'**********CHANGE ONLY THE VALUES ABOVE THIS LINE*********
+'*********************************************************
+
+'*** CHECK TO MAKE SURE WE HAVE THE MANDITORY DATE ENTERED!
+'If ActiveDocument.FormFields("Date").Result = "" Then
+'NUL = MsgBox("You must enter a valid date before submitting", vbOKOnly, "Submit Error")
+'ActiveDocument.FormFields("DATE").Select
+'Exit Sub
+'End If
+
+'*** Ensure they really want to do this
+strAnswer = MsgBox("Are you sure you wish to submit this report?", vbYesNo, "Submit?")
+
+If strAnswer = vbYes Then
+  strDate = ((Format(Now, "yyyy-MM-dd") & " (" & DateDiff("s", #1/1/1970#, Now())) & ")")
+
+'*** SAVE THE DOCUMENT TEMPORARILY
+  strPath = Environ("TEMP")
+  ChangeFileOpenDirectory strPath
+
+  strFileName = strDate & " - " & strFile
+  strFileNameTemp = strFileName & "A"
+
+  ActiveDocument.SaveAs FileName:=strFileNameTemp, FileFormat:=wdFormatDocument, _
+  LockComments:=False, Password:="", AddToRecentFiles:=True, WritePassword _
+  :="", ReadOnlyRecommended:=False, EmbedTrueTypeFonts:=False, _
+  SaveNativePictureFormat:=False, SaveFormsData:=False, SaveAsAOCELetter:= _
+  False
+
+'*** COPY FILE TO AN UNLOCKED OBJECT
+  Set FSO = CreateObject("scripting.filesystemobject")
+  strFromFile = strPath & "\" & strFileNameTemp & ".doc"
+  strToFile = strPath & "\" & strFileName & ".doc"
+  FSO.CopyFile Source:=strFromFile, Destination:=strToFile
+
+  strFileName = strPath & "\" & strFileName & ".doc"
+
+'*** SEND AN EMAIL WITH DOCUMENT AS ATTACHMENT
+  Set objEMail = CreateObject("CDO.Message")
+  objEMail.From = strMailFrom
+  objEMail.To = strMailRecipient
+  objEMail.Subject = strFile & " - " & strDate
+  objEMail.Textbody = strFile & " for the date of " & strDate
+  objEMail.AddAttachment strFileName
+
+  objEMail.Configuration.Fields.Item("http://schemas.microsoft.com/cdo/configuration/sendusing") = 2
+  objEMail.Configuration.Fields.Item("http://schemas.microsoft.com/cdo/configuration/smtpserver") = strMailServer
+  objEMail.Configuration.Fields.Item("http://schemas.microsoft.com/cdo/configuration/smtpserverport") = 25
+  objEMail.Configuration.Fields.Update
+  objEMail.Send
+
+  Set objEMail = Nothing
+  If Err.Number <> 0 Then
+    MsgBox Err.Number & vbCrLf & Err.Description
+  Else
+    MsgBox "eMail successfully sent."
+  End If
+
+  Application.Quit
+
+Else
+  Exit Sub
+End If
+
+End Sub
+
