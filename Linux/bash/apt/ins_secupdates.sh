@@ -4,7 +4,7 @@
 #
 # Checks for security updates, install them and send a email notification
 
-MAIL_TO="postmaster@o-o-s.de"
+MAIL_TO="admin@domain.tld"
 
 LANG=C
 
@@ -37,4 +37,3 @@ unset UPDATES
 apt-get update > /dev/null 2>&1
 
 exit 0
-
