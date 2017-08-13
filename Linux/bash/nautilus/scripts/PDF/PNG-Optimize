@@ -1,0 +1,36 @@
+#!/bin/bash
+ans=$(zenity --scale --text "Optimierungslevel (7=höchste)" --min-value=0 --max-value=7 --value=7);echo "${ans}"
+(
+m=0 # counter
+IFS="
+"
+# get number of files
+for ARG in ${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS}
+  do
+    if [[ "${ARG}" == *.png ]]; then
+      m=$(("${m}" + 1))
+   else
+     notify-send "Skipping: $(basename "${ARG}")"
+   fi
+done
+percent=$((100 / "${m}"))
+
+# process all files
+m=0
+
+#ans=$(zenity --scale --text "Optimierungslevel (7=höchste)" --min-value=0 --max-value=7 --value=7);echo $ans
+
+percent_loop=0
+for ARG in ${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS}
+  do
+    if [[ ${ARG} == *.png ]]; then
+      optipng -o"${ans}" "${ARG}"
+      percent_loop=$(("${percent_loop}" + "${percent}"))
+      echo $percent_loop
+      echo "# Done: $(basename "${ARG}")"
+      m=$(("${m}" + 1))
+   fi
+done ) | zenity --progress \
+  --title="Optimizing PNG files..." \
+  --text="Analyzing files..." \
+  --percentage=0
