@@ -1,0 +1,32 @@
+#!/bin/bash
+
+rm -f /tmp/checkfile.txt
+rm -f /tmp/checksfv.txt
+
+for file in $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS; do
+
+if [[ $(echo $file | sed -e 's/.*\.//g') == "sfv" ]]; then
+
+export LANG=C; cksfv -f $file > /tmp/checkfile.txt 2>&1 | zenity --progress --title "Check sfv" --text "Checking: $file" --pulsate --auto-close
+
+origfile=$(echo $file | sed -e 's/\.sfv//g')
+failfile=$(echo $file | sed -e 's/.*\///g')
+
+Passed=`cat /tmp/checkfile.txt | fgrep -o -e "OK" | wc -l`
+Failed=`cat /tmp/checkfile.txt | fgrep -o -e "Errors" | wc -l`
+
+   if [[ $Failed == 0 ]]; then
+       StatusMessage="$P_OK"
+   else
+       StatusMessage="$P_FAIL"
+   fi
+
+echo -en "\n=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=\n" >> /tmp/checksfv.txt
+echo "$StatusMessage" >> /tmp/checksfv.txt
+
+else	zenity --info --title="Cksfv" --text="$failfile is not a CRC checksum file."
+fi; 
+
+done
+
+zenity --text-info --title "Result" --width=640 --height=480 --filename=/tmp/checkfile.txt
