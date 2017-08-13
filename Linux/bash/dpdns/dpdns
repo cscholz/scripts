@@ -1,0 +1,586 @@
+#!/bin/bash
+Version=0.22
+# dpdns: data-privacy-dns
+# Script manages a DNS blacklist for dnsmasq or debian. It allows to download
+# or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
+# format. The script checks by himself if a new verison of itself exist.
+# If it the case an update can be performed.
+# Style-Guide: https://google.github.io/styleguide/shell.xml#Case_statement
+
+BindWeb=http://dpdns.cscholz.io/blacklist.bind
+BindLocal=/etc/bind/blacklist.bind
+
+MasqWeb=http://dpdns.cscholz.io/blacklist.dnsmasq
+MasqLocal=/etc/dnsmasq.d/blacklist.dnsmasq
+
+function log {
+  #######################################
+  # Log Eventls to stdout and syslog
+  # Arguments:
+  #   Message to log
+  # Returns:
+  #   None
+  #######################################
+
+  echo -e "${1}"
+  logger -t "updateDNSBL" "${1}"
+}
+
+
+function dnsbl_update_check() {
+  #######################################
+  # Compare the version number of the local and web blacklist to
+  # Arguments:
+  #   $1 Web blacklist url
+  #   $2 Local blacklist path
+  #   $3 bind or dnsmasq file to check
+  # Returns:
+  #   None
+  #######################################
+
+  local web_version
+  web_version=$(curl -s -r 0-20 "${1}" | head -1 | egrep -o "([0-9.]{1,4}+)")
+
+  local local_version
+  [[ -e "${2}" ]] && local_version=$(head -1 "${2}" | egrep -o "([0-9.]{1,4}+)")
+  [[ -z "${local_version}" ]] && local local_version=0
+
+  case ${3} in
+    bind)    local web_url=${BindWeb}
+                 local local_path=${BindLocal}
+                     local service_restart_cmd="service bind9 restart"
+                     ;;
+    dnsmasq) local web_url=${MasqWeb}
+                 local local_path=${MasqLocal}
+                         local service_restart_cmd="service dnsmasq restart"
+                         ;;
+  esac
+
+  echo "DNSBL-Local: ${local_version}"
+  echo "DNSBL-Web:   ${web_version}"
+
+  if [[ -n "${web_version}" ]]; then
+    if [[ "${web_version}" -gt "${local_version}" ]];
+    then
+        log "New Version of DNSBL"
+        echo "--------------------"
+        log "> Downloading new version"
+        cd /tmp/ || exit
+        wget -q -O blacklist ${web_url}
+        log "> Update DNSBL (${local_version} > ${web_version})"
+        [[ -e $(which open) ]] && open
+#       [[ -e "${local_path}" ]] && cp ${local_path} ${local_path}.1
+        cat /tmp/blacklist > ${local_path}
+
+                if [[ "${3}" == "dnsmasq" ]]; then
+                  sed "s/127.0.0.1/$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)/g" -i $local_path
+                  echo "> Update dnsbl with eth0 ip"
+                fi
+
+        [[ -e $(which close) ]] && close
+
+       log "> Restart DNS Service (${3})"
+        ${service_restart_cmd}
+    else
+        log "DNSBL is up to date (${local_version}=>${web_version})"
+    fi;
+  else
+    log "Could not retrieve DNS blacklist from webserver"
+  fi
+}
+
+function dnsbl_raise_version() {
+  #######################################
+  # Raise version number of dnsbl
+  # Arguments:
+  # Returns:
+  #   None
+  #######################################
+
+  local local_version
+  local_version=$(head -1 "${1}" | grep Version | awk '{print $2}')
+  local new_version
+  new_version=$(($(echo "${local_version}") + 1))
+  echo -n "> Raise version number (${local_version}>${new_version})..."
+
+  sed "s/\/\/Version\:\ ${local_version}/\/\/Version\:\ ${new_version}/" -i "$1"
+  sed "s/\#Version\:\ ${local_version}/\#Version\:\ ${new_version}/" -i "$1"
+  echo "Done"
+}
+
+function dnsbl_upload() {
+  #######################################
+  # Upload the blacklist to cscholz.io
+  # Arguments:
+  #   $1 blacklist to upload
+  #   $2 bind9 or dnsmasq
+  # Returns:
+  #   None
+  #######################################
+
+  checkpackage ncftp
+  local upload_server=cscholz.io
+
+  # replace client ip with localhost
+  cp "${1}" /tmp/
+  local upload_file
+  upload_file=/tmp/$(basename "${1}")
+
+  if [[ "${2}" == "dnsmasq" ]]; then
+    echo -n "> Preparing file..."
+    sed -r 's/(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/127\.0\.0\.1/g' -i -i "${upload_file}"
+    echo Done
+  fi
+
+  # Query username and password
+  unset password
+  unset username
+  unset charcount
+
+  echo "Server: ${upload_server}"
+  echo -n "Webdav Username:"
+  read -r username
+  echo -n "Enter password: "
+  stty -echo
+  charcount=0
+  while IFS= read -p "${prompt}" -r -s -n 1 char
+  do
+    # Enter - accept password
+    if [[ ${char} == $'\0' ]] ; then
+      break
+    fi
+    # Backspace
+    if [[ ${char} == $'\177' ]] ; then
+      if [ ${charcount} -gt 0 ] ; then
+        charcount=$((charcount-1))
+        prompt=$'\b \b'
+        password="${password%?}"
+      else
+        prompt=''
+        fi
+    else
+      charcount=$((charcount+1))
+      prompt='*'
+      password+="${char}"
+    fi
+  done
+  echo
+  stty echo
+
+# push files
+ncftp -u "${username}" -p "${password}" "${upload_server}"<<ENDFTP
+cd dpdns.cscholz.io
+put ${upload_file}
+set confirm-close no
+quit
+ENDFTP
+
+  rm "${upload_file}"
+}
+
+function progressbar {
+  #######################################
+  # Display a progress bar
+  # Arguments:
+  #   $1 Current loop number
+  #   $2 max. no of loops (1005)
+  # Returns:
+  #   None
+  #######################################
+
+  # Process data
+  let _progress="(${1}*100/${2}*100)/100"
+  let _done="(${_progress}*4)/10"
+  let _left=40-$_done
+
+  # Build progressbar string lengths
+  _fill=$(printf "%${_done}s")
+  _empty=$(printf "%${_left}s")
+
+  # 1.2 Build progressbar strings and print the progressbar line
+  # 1.2.1 Output example:
+  # 1.2.1.1 Progress : [########################################] 100%
+  printf "\rProgress : [${_fill// /#}${_empty// /-}] ${_progress}%% ($1/$2)"
+}
+
+function dnsbl_convert_to_dnsmasq {
+  #######################################
+  # Convert bind9 dnsbl to dnsmasq file format
+  # Arguments:
+  #   $1 bind9 source file
+  #   $2 dnsmasq target file
+  # Returns:
+  #   None
+  #######################################
+
+  if [[ -n "${2}" ]] ; then
+    if [[ -f "${1}" ]]; then
+      echo Converting bind9 file to dnsmasq file format:
+
+      _start=0
+      _end=$(grep "//" "${1}" -c)
+
+      IFS=$'\n'       # make newlines the only separator
+      for j in $(grep "//" ${1})
+      do
+        if [[ "${j}" =~ ^//Version.* ]]; then
+          echo "${j}" | sed s'/\/\//#/g' > "${2}"
+        else
+          echo "${j}" | sed s'/\/\//#/g' >> "${2}"
+          echo "${j}" | sed 's/\,//g' | \
+                    awk '{print "address=/"$2"/192.168.10.1"}' >> "${2}"
+        fi
+        let _start=_start+1
+        progressbar "${_start}" "${_end}"
+      done
+      sed s'/\/\//#/g' -i "${2}"
+    else
+      echo "File ${BindLocal} not found. Aborting"
+    fi
+  else
+    echo "Usage: ${0} {bind9-source-file} {dnsmasq-target-file}"
+  fi
+}
+
+function dnsbl_convert_to_bind {
+  #######################################
+  # Convert dnsmasq dnsbl to bind9 file format
+  # Arguments:
+  #   $1 dnsmasq source file
+  #   $2 bind9 target file
+  # Returns:
+  #   None
+  #######################################
+
+  if [[ -n "${2}" ]] ; then
+    if [[ -f "${1}" ]]; then
+      echo Converting dnsmasq file to bind file format:
+
+      _start=0
+      _end=$(grep "#" "${1}" -c)
+
+      IFS=$'\n'       # make newlines the only separator
+      for j in $(grep "#" "${1}")
+      do
+        if [[ "${j}" =~ ^#Version.* ]]; then
+          echo "${j}" | sed s'/#/\/\//g' > "${2}"
+        else
+          echo "${j}" | sed s'/#/\/\//g' >> "${2}"
+          echo "${j}" | sed s'/#/\/\//g' | \
+                    awk '{print "zone \""$2"\" {type master; file \"blacklisted.zones\";};"}' >> "${2}"
+        fi
+        let _start=_start+1
+        progressbar "${_start}" "${_end}"
+      done
+      sed s'/#/\/\//g' -i "${2}"
+    else
+      echo "File ${BindLocal} not found. Aborting"
+    fi
+  else
+    echo "Usage: ${0} {dnsmasq-source-file} {bind-target-file}"
+  fi
+}
+
+function dnsbl_precheck() {
+  #######################################
+  # Arguments:
+  #   $1 domain to check if already listed
+  #   $2 blacklist file
+  # Returns:
+  #   1: domain is already listed
+  #   2: domain is not listed
+  #######################################
+  if [ -n "$2" ] ; then
+    unset DomainCheck
+    dnsfile=$2
+    Domain=$1
+    DomainArray=(${Domain//./ })
+    ArrayNo=${#DomainArray[@]}
+
+    while [  "${ArrayNo}" -gt 0 ]; do
+    unset match
+      if [ -z "$DomainCheck" ]; then
+        DomainCheck=${DomainArray[$ArrayNo-2]}"."${DomainArray[$ArrayNo-1]}
+        let ArrayNo-=2
+        match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+        if [ ! -z "$match" ]; then
+          return "1"
+        fi
+        else
+          let ArrayNo-=1
+          DomainCheck=${DomainArray[$ArrayNo]}"."$DomainCheck
+          match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+          if [ ! -z "$match" ]; then
+            return "1"
+            break
+          fi
+        fi
+    done
+    return "0"
+  else
+    return "0"
+  fi
+}
+
+
+function dnsbl_add_record() {
+  #######################################
+  # Arguments:
+  #   $1 domain
+  #   $2 blacklist file
+  #   $3 bind9 or dnsmasq
+  #   $4 blacklist comment
+  # Returns:
+  #   None
+  #######################################
+
+  local domain
+  domain=$(echo "${1}" | tr '[:upper:]' '[:lower:]')
+  local blacklist_file=$2
+  if [[ -z "${3}" ]]; then
+    echo "Usage: $0 add bild.de Advertising"
+    exit 0
+  fi
+  if [ ! -z "$4" ] ; then
+      comment=", $4"
+  else
+      comment=""
+  fi
+
+
+  if dnsbl_precheck "${domain}" "${blacklist_file}"; then
+    echo "Add $domain to blacklist [$blacklist_file]"
+    str_date=$(date +%Y"-"%m"-"%d",")
+#    grep $(echo $domain |rev | cut -d "." -f 1,2 |rev) $blacklist_file --color=auto
+    sed -i "/\"$domain/d;/\ $domain/d;/\/$domain/d" "${blacklist_file}"
+
+    if [[ "${3}" == "bind9" ]]; then
+      echo "//$str_date ${domain}${comment}" >> "${blacklist_file}"
+      echo zone \"$domain\" \{type master\; file \"blacklisted.zones\"\;}\; >> "${blacklist_file}"
+    fi
+
+    if [[ "${3}" == "dnsmasq" ]]; then
+      local eth0_ip
+      eth0_ip=$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)
+      echo "#$str_date $domain$comment" >> "${blacklist_file}"
+      echo "address=/$domain/${eth0_ip}" >>  "${blacklist_file}"
+    fi
+  else
+    echo "$domain or parent already blacklisted in [${blacklist_file}]"
+  fi
+}
+
+function dnsbl_rm_record() {
+  #######################################
+  # Arguments:
+  #   $1 domain
+  #   $2 blacklist file
+  # Returns:
+  #   None
+  #######################################
+
+  local domain
+  domain=$(echo "${1}" | tr '[:upper:]' '[:lower:]')
+
+  if [[ -z "${2}" ]] ; then
+    echo "Usage: $0 rm bild.de"
+    exit 0
+  else
+    local blacklist_file=$2
+  fi
+
+  match=$(egrep "(\ ${domain})" "${blacklist_file}")
+  if [ ! -z "${match}" ]; then
+    echo "Removing domain $domain from [$blacklist_file]"
+    echo "Matches found:"
+    echo "----------------"
+    grep $(echo ${domain} |rev | cut -d "." -f 1,2 |rev) ${blacklist_file} --color=auto
+    sed -i "/\"$domain/d;/\ $domain/d;/\/$domain/d" ${blacklist_file}
+    echo
+  else
+    echo "$domain not blacklisted in [$blacklist_file]"
+  fi
+}
+
+run_self_update() {
+  #######################################
+  # Download a new copy of myself and replace myself with it
+  # Arguments:
+  #   $1 $0 (script name)
+  #   $2 update where the new version is stored
+  # Returns:
+  #   None
+  #######################################
+
+  self=${1}
+
+  # The base location from where to retrieve new versions of this script
+  update_base=${2}
+
+  echo "> Performing self-update..."
+
+  # Download new version
+  echo -n "> Downloading latest version..."
+  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
+    echo "Failed: Error while trying to wget new version!"
+    echo "File requested: ${update_base}/${self}"
+    exit 1
+  fi
+  echo "Done."
+
+  # Download MD5 of update
+  echo -n "> Downloading md5 sum..."
+  if ! wget --quiet --output-document="${0}.md5" "${update_base}/${self}.md5" ; then
+    echo "Failed: Error while trying to wget md5sum!"
+    echo "File requested: ${update_base}/${self}.md5"
+    exit 1
+  fi
+  echo "Done."
+
+  # Checking MD5 sum
+  echo -n "> Checking MD5 sum..."
+  web_md5=$(cat ${0}.md5 | awk '{print $1}')
+  local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
+  if [[ $web_md5 != "${local_md5}" ]]; then
+    echo "Failed. Abort!"
+    echo "${web_md5} / ${local_md5}"
+    rm "${0}.md5"
+    exit 0
+  fi
+  echo "Ok"
+  rm "${0}.md5"
+
+  # Copy over modes from old version
+  OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
+  if ! chmod ${OCTAL_MODE} "${0}.tmp" ; then
+    echo "Failed: Error while trying to set mode on ${0}.tmp."
+    exit 1
+  fi
+
+  # Spawn update script
+  cat > updateScript.sh << EOF
+#!/bin/bash
+# Overwrite old file with new
+if mv "${0}.tmp" "${0}"; then
+  echo "Done. Update complete."
+  rm \${0}
+else
+  echo "Failed. Please try again!"
+  rm \${0}
+fi
+EOF
+
+  echo -n "> Start update process..."
+  exec /bin/bash updateScript.sh
+}
+
+check_self_update() {
+  #######################################
+  # Check for a new version of myself
+  # Arguments:
+  #   $1 $0 (script name)
+  # Returns:
+  #   None
+  #######################################
+
+  self=$(basename ${0})
+
+  # The base location from where to retrieve new versions of this script
+  local update_base=http://dpdns.cscholz.io
+
+  local myself_web_version
+  myself_web_version=$(curl -s -r 0-50 "${update_base}/${self}" | \
+  head -2 | egrep -o "([0-9.]{1,4}+)" )
+  myself_local_version=$(head -2 ${0}  | egrep -o "([0-9.]{1,4}+)")
+  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
+          read -p "Update (y/N) " -r
+    echo    # (optional) move to a new line
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+      run_self_update "${self}" "${update_base}"
+    fi
+  else
+          echo "No update available (v.${myself_local_version})"
+        fi
+}
+
+function show_help {
+  #######################################
+  # Show help informaton about the script
+  # Arguments:
+  #   None
+  # Returns:
+  #   None
+  #######################################
+
+  echo
+  echo "$0 (v.$Version)"
+  echo ------------------------
+  echo "Script offers management functions for the DNS Blacklist from cscholz.io"
+  echo -e "Update DNSBL:\t Update DNS blacklist from cscholz.io (Bind or dnsmasq)."
+  echo -e "\t\t Can be used in crontab with [$0 1 > /dev/null 2>&1] or [$0 5 > /dev/null 2>&1]"
+  echo -e "Upload DNSBL:\t Allows admin to raise the version of the DNS blacklist and to upload the new version."
+  echo -e "Convert [...]:\t Converts the existing DNS blacklist from bind to dnsmasq format or the other way around."
+}
+
+main() {
+  # If no parameter is pased directly check for a new version of myself
+
+  # check if case selection was given as second parameter
+  if [[ "${1}" == "" ]]; then
+    echo "  DATA PRIVACY DNS (v.${Version})"
+    echo ""
+    echo "  Bind:"
+    echo "  -------------------------------"
+    echo "  1)   Update DNSBL"
+    echo "  2)   Upload DNSBL"
+    echo "  3)   Raise DNSBL Version"
+    echo "  4)   Convert Bind > DNSMasq"
+    echo
+    echo "  DnsMasq:"
+    echo "  -------------------------------"
+    echo "  5)   Update DNSBL"
+    echo "  6)   Upload DNSBL"
+    echo "  7)   Raise DNSBL Version"
+    echo "  8)   Convert DNSMasq > Bind"
+    echo
+    echo "  add) Add domain to blacklist."
+    echo "  rm)  Remove domain from blacklist"
+    echo "  u)   Update"
+    echo "  h)   help"
+    echo "  x)   Exit"
+    echo -n "Select: "
+    read -r case;
+    echo
+  else
+    case="${1}"
+  fi
+
+  case "${case}" in
+    1)   dnsbl_update_check ${BindWeb} ${BindLocal} bind;;
+    2)   dnsbl_raise_version ${BindLocal}
+         dnsbl_upload ${BindLocal} bind9
+         ;;
+    3)   dnsbl_raise_version ${BindLocal};;
+    4)   dnsbl_convert_to_dnsmasq ${BindLocal} ${MasqLocal};;
+    5)   dnsbl_update_check ${MasqWeb} ${MasqLocal} dnsmasq;;
+    6)   dnsbl_raise_version ${MasqLocal}
+         dnsbl_upload ${MasqLocal} dnsmasq
+         ;;
+    7)   dnsbl_raise_version ${MasqLocal};;
+    8)   dnsbl_convert_to_bind ${MasqLocal} ${BindLocal};;
+    add) test -f "/etc/bind/blacklist.bind" && dnsbl_add_record "${2}" "/etc/bind/blacklist.bind" bind9 "${3}"
+         test -f "/etc/dnsmasq.d/blacklist.dnsmasq" && dnsbl_add_record "${2}" "/etc/dnsmasq.d/blacklist.dnsmasq" dnsmasq "${3}"
+         ;;
+    rm)  test -f "/etc/bind/blacklist.bind" && dnsbl_rm_record "${2}" "/etc/bind/blacklist.bind"
+         test -f "/etc/dnsmasq.d/blacklist.dnsmasq" && dnsbl_rm_record "${2}" "/etc/dnsmasq.d/blacklist.dnsmasq"
+         ;;
+    u)   check_self_update;;
+    h)   show_help;;
+    -?)  show_help;;
+    0)   exit;;
+  esac
+}
+
+main "$@"
