@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ "$2" == "" ]; then
+  echo "This script generates a PKA PGP record."
+  echo "Usage:" $0 "user@domain.tld http://domain.tld/pubkey.asc"
+else
+  maildomain=$(echo $1 | cut -d "@" -f 2)
+  localmail=$(echo $1 | cut -d "@" -f 1)
+  fingerprint=$(gpg --fingerprint --list-keys $1 | egrep '(fingerprint|Fingerabdruck)'|  sed 's/.*=//;s/\W//g')
+echo $localmail._pka  TXT         \"v=pka1;fpr=$fingerprint;uri=$2\"
+fi
+

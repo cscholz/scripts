@@ -1,0 +1,70 @@
+#!/bin/bash
+
+file="/boot/grub/grub.cfg"
+
+# choice counter
+i=0
+# entry counter
+j=0
+
+# counter for sub entries 0/1
+submenu=0
+
+echo -e "Choice\tEntry\tName"
+while read -r line
+do
+  if [[ $line == "submenu"* ]]; then
+    submenu=1
+    k=$j">"
+    j=0
+  fi
+
+  if [[ $submenu == 1 ]]; then
+    entryid=$k$j
+
+    # counter for open and close sub brackets {}
+    if [[ $line == *"{"* ]]; then
+      let "h=h+1"
+    fi
+    if [[ $line == *"}"* ]]; then
+      let "h=h-1"
+    fi
+  else
+    k=
+  fi
+
+  # reset submenu when subenu entry close
+  if [[ $h == 0 ]]; then
+    submenu=0
+  fi
+
+  if [[ $line == *"menuentry '"* ]]; then
+#    echo $line |awk -F\' '/menuentry / {print $2}'
+    echo -e "$i \t$k$j \t$(echo $line |cut -d "'" -f 2)"
+    array[$i]=$k$j
+    let "j=j+1"
+    let "i=i+1"
+  fi
+done < "$file"
+
+echo -n "Your choice: "
+read sel_entry
+
+read -r -p "Boot kernel once or permanent? [o/p] " response
+case $response in
+    [oO])
+        grub-reboot "${array[$sel_entry]}"
+        grub-editenv list
+        ;;
+    [pP])
+        sed -i 's/GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/g' /etc/default/grub
+        update-grub
+        grub-set-default "${array[$sel_entry]}"
+        grub-editenv list
+        ;;
+    *)
+        echo "Wrong selection. Aborted."
+        exit
+        ;;
+esac
+

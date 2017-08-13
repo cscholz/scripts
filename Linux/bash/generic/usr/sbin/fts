@@ -1,0 +1,12 @@
+#!/bin/bash
+if [ ! -z "$1" ] ; then
+  if [ ! -z "$2" ] ; then
+    echo "full text search for \"$1\" with subfolderdepth 2..."
+    find -L -maxdepth $2 -type f -print0 | tee $(mktemp) | xargs -0 egrep -i "$1" --color
+  else
+    echo "full text search for \"$1\" ..."
+    find -L -type f -print0 | tee $(mktemp) | xargs -0 egrep -i "$1" --color
+  fi
+else
+  echo "Usage: $0 {search string} {optional: max subfolder depth}"
+fi

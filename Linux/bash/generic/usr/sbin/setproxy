@@ -1,0 +1,149 @@
+#!/bin/bash
+
+### Proxy configuration ########################################################
+# The configuration of the proxies is organized in 'sets' that are identified
+# through the same index number. Each set can have the following parameters:
+#
+#   config_name[<index>]="<Config Name>"
+# [Required] The name of the configuration: An desired string that identifies
+# the configuration.
+#
+#   ip_pattern[<index>]='<IP Pattern>'
+# [Required] A pattern that matches the IP address for which the configuration
+# shall be activated. Example:
+#   ip_pattern[0]='192\.168\.\.*'
+# Note the single quotes!
+#
+#   use_proxy[<index>]=<yes|no>
+# [Required] Shall a proxy for this configuration be enabled or not?
+#
+#   proxy[<index>]=<proxy host name>:<proxy port>
+# [Optional] If a proxy should be used specify the name and the port using this
+# setting. Example:
+#   proxy[0]="externalproxy.example.com:8080"
+#
+#   no_proxy_urls[<index>]=<list of no proxy URLs>
+# [Optional] Space separated list of URLs for which the proxy shall be bipassed.
+# Example:
+#   no_proxy_urls="localhost .internal.example.com 192.168.0.0/255.255.255.0"
+# For more information consult the tinyproxy configuration documentation.
+
+# Office
+config_name[0]="Company 1"
+ip_pattern[0]='10\.46\..*'
+use_proxy[0]=yes
+proxy[0]="10.46.6.7:8080"
+
+# Home
+config_name[1]="Home"
+ip_pattern[1]='192\.168\..*'
+use_proxy[1]=no
+
+# Space separated list of interfaces, which will be monitored for a connected
+# network. The order may be important in case multiple interfaces are connected
+# at the same time
+NETWORK_DEVICE_LIST="eth0"
+
+# Enable debug output? [yes|no]
+DEBUG=no
+
+checkpackage ethtool
+
+function getConnectedIp
+{
+  for device in $NETWORK_DEVICE_LIST
+  do
+    # Does the device have a link?
+    if ethtool $device | grep -qs "Link detected: yes"
+    then
+      debug "Link detected for device $device"
+    else
+      debug "No link detected for device $device"
+    fi
+    if ip add show $device | grep "inet "
+    then
+      ip_addr=`ip addr show dev $device | grep "inet " | sed 's/.*\(inet \)\(.*\)\/.*/\2/'`
+      debug "Device $device has the IP address $ip_addr"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Returns the index of the configuration that shall be activated.
+function detectConfiguration
+{
+  ip_addr=`getConnectedIp`
+  if [ $? -ne 0 ]
+  then
+    warn "No configured device is connected to a network. Enabling default fallback configuration."
+    echo 255
+    return
+  fi
+  debug "Detect configuration for found IP address $ip_addr"
+  for (( i = 0 ; i < ${#ip_pattern[@]} ; i++ ))
+  do
+    if [ -n "${ip_pattern[$i]}" ]
+    then
+      if echo "$ip_addr" | grep -qs "${ip_pattern[$i]}"
+      then
+        export http_proxy=http://${proxy[$i]}
+        export https_proxy=http://${proxy[$i]}
+        color "Proxy configuration set:" yellow
+        echo "------------------------"
+        echo -e "Config\t\t${config_name[$i]}"
+        echo -e "Pattern\t\t${ip_pattern[$i]}"
+        echo -e "Use Proxy\t${use_proxy[$i]}"
+        echo -e "Proxy\t\t${proxy[$i]}"
+        return
+      fi
+    fi
+  done
+  warn "No configuration found that matches the IP address $ip_addr. Enabling default fallback configuration."
+  echo 255
+  return
+}
+
+
+function debug
+{
+  msg="$1"
+  [ "$DEBUG" == "yes" ] && echo "[DEBUG] $msg"
+
+}
+
+function warn
+{
+  msg="$1"
+  color "[WARNING] $msg" yellow
+}
+
+
+function error
+{
+  msg="$1"
+  color "[ERROR] $msg" red 1>&2
+}
+
+function info
+{
+  msg="$1"
+  echo "[INFO] $msg"
+}
+
+function color() {
+
+        if [ "$2" == "green" ]; then
+                echo -e "\033[40;1;32m$1\033[0m"
+        fi
+
+        if [ "$2" == "red" ]; then
+                echo -e "\033[40;1;31m$1\033[0m"
+        fi
+        if [ "$2" == "yellow" ]; then
+                echo -e "\033[40;1;33m$1\033[0m"
+        fi
+}
+
+detectConfiguration
+

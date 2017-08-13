@@ -1,0 +1,22 @@
+#!/bin/bash
+
+if [ "$2" == "" ]; then
+  echo "This script generates an openpgpkey DNS record."
+  echo "Usage:" $0 "user@domain.tld pub_key.asc"
+else
+  maildomain=$(echo $1 | cut -d "@" -f 2)
+  localmail=$(echo $1 | cut -d "@" -f 1)
+
+  keyid=$(echo $(gpg --list-packets $2 |  awk '/keyid/{print $NF}') |cut -d " " -f 1)
+  gpg --batch --import $2 > /dev/null 2>&1
+
+  openpgpkeydomain=$(echo -n $localmail | openssl dgst -sha224 | cut -d "=" -f 2)._openpgpkey.$maildomain
+  keysize=$(gpg --export --export-options export-minimal $1 | wc -c)
+  keydata=$(gpg --export --export-options export-minimal $1 | hexdump -e '"\t" /1 "%.2x"' -e '/65536 "\n"')
+
+  # send the DNS update
+  echo $openpgpkeydomain. 3600 IN TYPE61 \\# $keysize \( $keydata \)
+
+  gpg --batch --yes --delete-key $keyid
+
+fi

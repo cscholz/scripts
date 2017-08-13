@@ -1,0 +1,41 @@
+#!/bin/bash
+Version=0.2
+
+for i in "$@" ; do
+  if [[ "${i}" == "-V" ]] ; then
+     echo  "$(basename "${0}")" "${Version}"
+
+     echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
+     echo "Dieses Script ist unter GPL v.2. veröffentlicht"
+     echo
+     echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
+     exit 1
+  fi
+done
+
+OSTYPE=$(lsb_release -si | cut -d " " -f 1 |  tr '[:upper:]' '[:lower:]')
+
+if [ ! -z "$1" ] ; then
+  REPLY="n"
+  if ! which "${1}" > /dev/null 2>&1;  then
+     echo -e "Package \"$1\" not found! Install? (y/N) \c"
+     read -r REPLY
+
+     if [ -z "${REPLY}" ]; then
+       REPLY="n"
+     fi
+     if [ "${REPLY}" = "y" ]; then
+
+case "${OSTYPE}" in
+  debian*) sudo apt-get install "${1}" ;;
+  opensuse*)  sudo zypper in "${1}" ;; 
+  fedora*) sudo dnf install "${1}" ;; 
+  *)        echo "unknown: ${OSTYPE}" ;;
+esac
+     else
+       exit
+    fi
+  fi
+else
+  echo "!! Package name necessarry"
+fi

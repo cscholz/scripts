@@ -1,0 +1,13 @@
+#!/bin/bash
+# fetches an OPENPGPKEY and pipes the key into gpg
+# based on a Twitter msg by Paul Wouters (https://twitter.com/letoams/status/560834359981539329)
+
+if [ "$1" == "" ]; then
+  echo "This script import an pka PGP key if available"
+  echo "Usage:" $0 "user@domain.tld"
+else
+  maildomain=$(echo $1 | cut -d "@" -f 2)
+  localmail=$(echo $1 | cut -d "@" -f 1)
+  openpgpkeydomain=$(echo -n $localmail | openssl dgst -sha224 | cut -d "=" -f 2)._openpgpkey.$maildomain
+  dig +short +vc type61 $openpgpkeydomain | sed "s/ [^ ]*//;s/\W//g" | xxd -r -p | gpg
+fi
