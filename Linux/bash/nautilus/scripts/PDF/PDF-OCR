@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+# Version:    20170812-01
+# Description:  Compress pdf files via nautilius context menue
+
+set -euo pipefail
+# -e: exit immidiately when a command fails. If piped check only the last command error code.
+#     Use ||true for commands allowed to fail.
+# -u: treat unset variable as an error and exit immidiately
+# -o pipefail: same as -e but for all commands in a pipe.
+# -x: debug option
+
+# package required: ghostscript
+
+# Check if required packages are installed
+if ! which pypdfocr > /dev/null; then
+  if zenity --question --text="Command failed!\n\nA required package is missing. Try to install?" --ok-label="Yes" --cancel-label="No"; then
+    gnome-terminal -x bash -c "echo sudo dnf install ghostscript && sudo dnf install ghostscript"
+    notify-send "Please run command again after packge install."
+    exit
+    #sudo dnf install python-pip python2-PyPDF2 && sudo dnf install tesseract tesseract-langpack-deu tesseract-osd ImageMagick && pip install --upgrade pip &&  pip install pypdfocr  
+  else
+    exit
+  fi
+fi
+
+extension_filter="*.pdf"
+
+(
+m=0 # counter
+IFS="
+"
+# get number of files
+for ARG in $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS
+  do
+    if [[ ${ARG} = ${extension_filter} ]]; then
+      m=$(("${m}" + 1))
+   fi
+done
+percent=$((100 / "${m}"))
+
+# process all files
+m=0
+
+percent_loop=0
+for ARG in $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS
+  do
+    if [[ ${ARG} == ${extension_filter} ]]; then
+      if [[ ! -f $(dirname $ARG)/$(basename $ARG | sed 's/\.pdf/\_ocr\.pdf/g') ]]; then
+        pypdfocr -l deu "$ARG"
+        percent_loop=$(("${percent_loop}" + "${percent}"))
+        echo $percent_loop
+        echo "# Done: $(basename $ARG)"
+        m=$(("${m}" + 1))
+      else
+        echo "# Skipped: $(basename $ARG)"
+      fi
+   fi
+done ) | zenity --progress \
+  --title="PDF OCR" \
+  --text="Recognizing characters..." \
+  --percentage=0 \
+  --auto-kill
+
+
