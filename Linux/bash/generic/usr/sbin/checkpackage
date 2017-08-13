@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-Version=20170813.01
+Version=20170813.02
 
 # Description:  Script could be referenzed from other scripts to check if a required package is installed.
 # It checks if a package is installed. If not it asks if it should be installed.
 
-set -euo pipefail
+set -eo pipefail
 # -e: exit immidiately when a command fails. If piped check only the last command error code.
 #     Use ||true for commands allowed to fail.
 # -u: treat unset variable as an error and exit immidiately
@@ -133,7 +133,7 @@ main() {
 
   OSTYPE=$(lsb_release -si | cut -d " " -f 1 |  tr '[:upper:]' '[:lower:]')
 
-  if [ ! -z "$1" ] ; then
+  if [ ! -z "${1}" ] ; then
     REPLY="n"
     if ! which "${1}" > /dev/null 2>&1;  then
       echo -e "Package \"$1\" not found! Install? (y/N) \c"
