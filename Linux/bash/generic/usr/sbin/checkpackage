@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20170813.02
+Version=20170825.01
 
 # Description:  Script could be referenzed from other scripts to check if a required package is installed.
 # It checks if a package is installed. If not it asks if it should be installed.
@@ -98,9 +98,9 @@ check_self_update() {
 
   local myself_web_version
   myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+)" )
-  echo "Web:" $myself_web_version
-  myself_local_version=$(head -2 ${0}  | egrep -o "([0-9.]{1,4}+)")
-  echo "Loca:" $myself_local_version
+  echo "Web:" "${myself_web_version}"
+  myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
+  echo "Local:" "${myself_local_version}"
   if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
     echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
           read -p "Update (y/N) " -r
