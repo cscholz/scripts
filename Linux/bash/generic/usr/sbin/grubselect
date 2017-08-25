@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-Version=20170825.01
+Version=20170825.02
 
 # Description:  Make full text search easy
 
-# set -o pipefail
+set -o pipefail
 # -e: exit immidiately when a command fails. If piped check only the last command error code.
 #     Use ||true for commands allowed to fail.
 # -u: treat unset variable as an error and exit immidiately
@@ -205,18 +205,18 @@ main() {
       #Grub
       if [ "$grubV" == "grub" ]; then
         if [ "$k$j" == "$defEntry" ]; then
-           echo -e "$i (*) \t$k$j \t$(echo $line |cut -d "'" -f 2)"
+           echo -e "$i (*) \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
         else
-           echo -e "$i \t$k$j \t$(echo $line |cut -d "'" -f 2)"
+           echo -e "$i \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
         fi
       fi
   
       # Grub2
       if [ "$grubV" == "grub2" ]; then
-        if [ "$(echo $line | cut -d "'" -f 2)" == "$defEntry" ]; then
-           echo -e "$i (*) \t$k$j \t$(echo $line |cut -d "'" -f 2)"
+        if [ "$(echo "${line}" | cut -d "'" -f 2)" == "$defEntry" ]; then
+           echo -e "$i (*) \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
         else
-           echo -e "$i \t$k$j \t$(echo $line |cut -d "'" -f 2)"
+           echo -e "$i \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
         fi
       fi
   
@@ -227,7 +227,7 @@ main() {
   done < "$file"
   
   echo -n "Your choice: "
-  read sel_entry
+  read -r sel_entry
   
   read -r -p "Boot kernel once or permanent? [o/p] " response
   case $response in
