@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-Version=20170825.01
+Version=20170825.02
 
 # Description:  Script could be referenzed from other scripts to check if a required package is installed.
 # It checks if a package is installed. If not it asks if it should be installed.
 
-set -eo pipefail
+set -u
 # -e: exit immidiately when a command fails. If piped check only the last command error code.
 #     Use ||true for commands allowed to fail.
 # -u: treat unset variable as an error and exit immidiately
@@ -48,7 +48,7 @@ run_self_update() {
 
   # Checking MD5 sum
   echo -n "> Checking MD5 sum..."
-  web_md5=$(cat ${0}.md5 | awk '{print $1}')
+  web_md5=$(cat "${0}".md5 | awk '{print $1}')
   local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
   if [[ $web_md5 != "${local_md5}" ]]; then
     echo "Failed. Abort!"
@@ -61,7 +61,7 @@ run_self_update() {
 
   # Copy over modes from old version
   OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
-  if ! chmod ${OCTAL_MODE} "${0}.tmp" ; then
+  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
     echo "Failed: Error while trying to set mode on ${0}.tmp."
     exit 1
   fi
@@ -92,7 +92,7 @@ check_self_update() {
   #   None
   #######################################
 
-  self=$(basename ${0})
+  self=$(basename "${0}")
   # The base location from where to retrieve new versions of this script
   local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
 
@@ -137,104 +137,104 @@ main() {
   done
 
 
-  PARAM=""
-  TIMEOUT="5"
-  RECIPIENT="postmaster@o-o-s.de"
-  TEMP=$(tempfile)
-  
-  trap "rm -f '$TEMP'" exit
-  
-  if [ "$1" = "" ] || [ "$2" = "" ]; then
-          echo "$0 domain.tld port"
-          exit 1
-  fi
-  
-  # identitfy port and set starttls
-  if [ $2 = "25" ] || [ $2 = "465" ] || [ $2 = "587" ]; then
-    PARAM="-starttls smtp"
-    PROTOCOL="SMTPs"
-  fi
-  
-  if [ $2 = "21" ]; then
-    PARAM="-starttls ftp"
-    PROTOCOL="FTPs"
-  fi
-  
-  if [ $2 = "993" ]; then
-    PROTOCOL="IAMPs"
-  fi
-  
-  if [ $2 = "995" ]; then
-    PROTOCOL="POP3s"
-  fi
-  
-  if [ $2 = "443" ]; then
-    PROTOCOL="HTTPs"
-  fi
-  
-  TLSA=$(dig +nocmd +noall +answer TLSA _$2._tcp.$1. +short | tr '[:upper:]' '[:lower:]')
-  
-  if [ -z "$TLSA" ]; then
-    echo "no TLSA record"
-    exit
-  fi
-  
-  
-  # quit if remote service is not available
-  sleep 1 | telnet $1 $2 > $TEMP
-  con_status=$(grep -i connected $TEMP | tr '[:upper:]' '[:lower:]')
-  if [[ "$con_status" == *connected* ]]; then
-    echo -e Remote Service: $1:$2 \('\E[40;1;32m'"\033\OK\033[0m)"
-  else
-    echo -e Remote Service: $1:$2 \('\E[40;1;31m'"\033\DOWN\033[0m)"
-    exit
-  fi
-  > $TEMP
-  
-  # _25._tcp_domain.tld TLSA 3 0 1 ADEF...
-  #                          ^ ^ ^
-  #                          | | - 0: full, 1 SHA256, 2 SHA512
-  #                          | - 0: Cert, 1 SPKI
-  #                          - 0: Certificate Authority Constraint, 1: PKIX-EE: Service Certificate Constraint,
-  #                            2: Trust Anchor Assertion, 3: Domain Issued Certificate
-  
-  #_25._tcp_domain.tld TLSA 3 0 1 ADEF...
-  if [ $(echo $TLSA | awk '{print $2}') = "0" ] && [ $(echo $TLSA | awk '{print $3}') = "1" ]; then
-    cert=$(timeout $TIMEOUT openssl s_client -showcerts -CApath /etc/ssl/certs/ $PARAM -servername $1 -connect $1:$2 < /dev/null | openssl x509 -outform DER | openssl sha256 |grep stdin | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
-  fi
-  
-  #_25._tcp_domain.tld TLSA 3 0 2 ADEF...
-  if [ $(echo $TLSA |  awk '{print $2}') = "0" ] && [ $(echo $TLSA | awk '{print $2}') = "2" ]; then
-    cert=$(timeout $TIMEOUT openssl s_client -showcerts -CApath /etc/ssl/certs/ $PARAM -servername $1 -connect $1:$2 < /dev/null | openssl x509 -outform DER | openssl sha512 |grep stdin | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
-  fi
-  
-  
-  #_25._tcp_domain.tld TLSA 3 1 1 ADEF...
-  if [ $(echo $TLSA |  awk '{print $2}') = "1" ] && [ $(echo $TLSA | awk '{print $2}') = "1" ]; then
-    cert=$(timeout $TIMEOUT openssl s_client $PARAM -servername $1 -connect $1:$2 </dev/null | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | openssl x509 -pubkey -noout | openssl rsa -pubin -outform der | sha256sum | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
-  fi
-  
-  #_25._tcp_domain.tld TLSA 3 1 2 ADEF...
-  if [ $(echo $TLSA |  awk '{print $2}') = "1" ] && [ $(echo $TLSA | awk '{print $2}') = "2" ]; then
-    cert=$(timeout $TIMEOUT openssl s_client $PARAM -servername $1 -connect $1:$2 </dev/null | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | openssl x509 -pubkey -noout | openssl rsa -pubin -outform der | sha512sum | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
-  fi
-  
-  # compare both fingerprints and send an email in the case of an mismatch
-  if [ $(echo $TLSA | awk '{print $4$5}') = "$cert" ]; then
-    echo -e '[\E[40;1;32m'"\033\ OK\033[0m ] $1"
-  else
-    echo -e '[\E[40;1;31m'"\033\ Fail\033[0m ] $1"
-    openssl s_client -servername $1 -connect $1:$2 $PARAM -showcerts < /dev/null | openssl x509 -outform DER > /tmp/$1.cer
-  
-    echo "DNS record" >> $TEMP
-    echo "---------------------" >> $TEMP
-    timeout 5 dig +nocmd +noall +answer TLSA _$2._tcp.$1. | tr '[:upper:]' '[:lower:]' >> $TEMP
-    echo "" >> $TEMP
-    echo "Active Zertifikate" >> $TEMP
-    echo "---------------------" >> $TEMP
-    echo "Certificate: $cert" >> $TEMP
-    mutt $RECIPIENT -s "[$1] - $PROTOCOL TLSA error" -a /tmp/$1.cer < $TEMP
-  fi  
+PARAM=""
+TIMEOUT="5"
+RECIPIENT="postmaster@o-o-s.de"
+TEMP=$(tempfile)
+
+trap "rm -f '"${TEMP}"'" exit
+
+if [ "$1" = "" ] || [ "$2" = "" ]; then
+        echo "$0 domain.tld port"
+        exit 1
+fi
+
+# identitfy port and set starttls
+if [ $2 = "25" ] || [ $2 = "465" ] || [ $2 = "587" ]; then
+  PARAM="-starttls smtp"
+  PROTOCOL="SMTPs"
+fi
+
+if [ $2 = "21" ]; then
+  PARAM="-starttls ftp"
+  PROTOCOL="FTPs"
+fi
+
+if [ $2 = "993" ]; then
+  PROTOCOL="IAMPs"
+fi
+
+if [ $2 = "995" ]; then
+  PROTOCOL="POP3s"
+fi
+
+if [ $2 = "443" ]; then
+  PROTOCOL="HTTPs"
+fi
+
+TLSA=$(dig +nocmd +noall +answer TLSA _$2._tcp.$1. +short | tr '[:upper:]' '[:lower:]')
+
+if [ -z "$TLSA" ]; then
+  echo "no TLSA record"
+  exit
+fi
+
+
+# quit if remote service is not available
+sleep 1 | telnet $1 $2 > "${TEMP}"
+con_status=$(grep -i connected "${TEMP}" | tr '[:upper:]' '[:lower:]')
+if [[ "$con_status" == *connected* ]]; then
+  echo -e Remote Service: $1:$2 \('\E[40;1;32m'"\033\OK\033[0m)"
+else
+  echo -e Remote Service: $1:$2 \('\E[40;1;31m'"\033\DOWN\033[0m)"
+  exit
+fi
+> "${TEMP}"
+
+# _25._tcp_domain.tld TLSA 3 0 1 ADEF...
+#                          ^ ^ ^
+#                          | | - 0: full, 1 SHA256, 2 SHA512
+#                          | - 0: Cert, 1 SPKI
+#                          - 0: Certificate Authority Constraint, 1: PKIX-EE: Service Certificate Constraint,
+#                            2: Trust Anchor Assertion, 3: Domain Issued Certificate
+
+#_25._tcp_domain.tld TLSA 3 0 1 ADEF...
+if [ $(echo $TLSA | awk '{print $2}') = "0" ] && [ $(echo $TLSA | awk '{print $3}') = "1" ]; then
+  cert=$(timeout $TIMEOUT openssl s_client -showcerts -CApath /etc/ssl/certs/ $PARAM -servername $1 -connect $1:$2 < /dev/null | openssl x509 -outform DER | openssl sha256 |grep stdin | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
+fi
+
+#_25._tcp_domain.tld TLSA 3 0 2 ADEF...
+if [ $(echo $TLSA |  awk '{print $2}') = "0" ] && [ $(echo $TLSA | awk '{print $2}') = "2" ]; then
+  cert=$(timeout $TIMEOUT openssl s_client -showcerts -CApath /etc/ssl/certs/ $PARAM -servername $1 -connect $1:$2 < /dev/null | openssl x509 -outform DER | openssl sha512 |grep stdin | awk '{print $2}' | tr '[:upper:]' '[:lower:]')
+fi
+
+
+#_25._tcp_domain.tld TLSA 3 1 1 ADEF...
+if [ $(echo $TLSA |  awk '{print $2}') = "1" ] && [ $(echo $TLSA | awk '{print $2}') = "1" ]; then
+  cert=$(timeout $TIMEOUT openssl s_client $PARAM -servername $1 -connect $1:$2 </dev/null | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | openssl x509 -pubkey -noout | openssl rsa -pubin -outform der | sha256sum | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+fi
+
+#_25._tcp_domain.tld TLSA 3 1 2 ADEF...
+if [ $(echo $TLSA |  awk '{print $2}') = "1" ] && [ $(echo $TLSA | awk '{print $2}') = "2" ]; then
+  cert=$(timeout $TIMEOUT openssl s_client $PARAM -servername $1 -connect $1:$2 </dev/null | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | openssl x509 -pubkey -noout | openssl rsa -pubin -outform der | sha512sum | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+fi
+
+# compare both fingerprints and send an email in the case of an mismatch
+if [ $(echo $TLSA | awk '{print $4$5}') = "$cert" ]; then
+  echo -e '[\E[40;1;32m'"\033\ OK\033[0m ] $1"
+else
+  echo -e '[\E[40;1;31m'"\033\ Fail\033[0m ] $1"
+  openssl s_client -servername $1 -connect $1:$2 $PARAM -showcerts < /dev/null | openssl x509 -outform DER > /tmp/$1.cer
+
+  echo "DNS record" >> "${TEMP}"
+  echo "---------------------" >> "${TEMP}"
+  timeout 5 dig +nocmd +noall +answer TLSA _$2._tcp.$1. | tr '[:upper:]' '[:lower:]' >> "${TEMP}"
+  echo "" >> "${TEMP}"
+  echo "Active Zertifikate" >> "${TEMP}"
+  echo "---------------------" >> "${TEMP}"
+  echo "Certificate: $cert" >> "${TEMP}"
+  mutt $RECIPIENT -s "[$1] - $PROTOCOL TLSA error" -a /tmp/$1.cer < "${TEMP}"
+fi  
 }
 
 main "$@"

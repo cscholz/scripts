@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20170825.01
+Version=20170825.02
 
 # Description:  Script could be referenzed from other scripts to check if a required package is installed.
 # It checks if a package is installed. If not it asks if it should be installed.
@@ -92,7 +92,7 @@ check_self_update() {
   #   None
   #######################################
 
-  self=$(basename ${0})
+  self=$(basename "${0}")
   # The base location from where to retrieve new versions of this script
   local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
 
