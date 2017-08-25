@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20170825.01
+Version=20170825.02
 
 # Description:  Make full text search easy
 
@@ -132,7 +132,7 @@ main() {
 
   
   if [ ! -z "$1" ]; then
-    gpg --keyserver hkp://keys.gnupg.net --keyserver wwwkeys.pgp.net --search-keys $1
+    gpg --keyserver hkp://keys.gnupg.net --keyserver wwwkeys.pgp.net --search-keys "${1}"
   else
     echo "Usage: $0 {Key-ID|E-Mail Address}"
   fi
