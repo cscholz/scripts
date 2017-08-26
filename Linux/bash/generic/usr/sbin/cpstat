@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 Version=20170826.01
 
-# Description:  Make full text search easy
+# Description:  Show progress bar while copying files
 
-set -o pipefail
+set -eo pipefail
 # -e: exit immidiately when a command fails. If piped check only the last command error code.
 #     Use ||true for commands allowed to fail.
 # -u: treat unset variable as an error and exit immidiately
@@ -47,7 +47,7 @@ run_self_update() {
 
   # Checking MD5 sum
   echo -n "> Checking MD5 sum..."
-  web_md5=$(cat ${0}.md5 | awk '{print $1}')
+  web_md5=$(cat "${0}".md5 | awk '{print $1}')
   local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
   if [[ $web_md5 != "${local_md5}" ]]; then
     echo "Failed. Abort!"
@@ -60,7 +60,7 @@ run_self_update() {
 
   # Copy over modes from old version
   OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
-  if ! chmod ${OCTAL_MODE} "${0}.tmp" ; then
+  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
     echo "Failed: Error while trying to set mode on ${0}.tmp."
     exit 1
   fi
@@ -113,33 +113,9 @@ check_self_update() {
         fi
 }
 
-function grub-ident {
-  if [ -f "/boot/grub/grub.cfg" ]; then
-    echo "> Grub v1 found!"
-    grubV="grub"
-    file="/boot/grub/grub.cfg"
-    grub_reboot=$(which grub-reboot)
-    grub_editenv=$(which grub-editenv)
-    update_grub=$(which update-grub)
-    grub_reboot=$(which grub-reboot)
-    grub_set_default=$(which grub-set-default)
-    grub_editenv=$(which grub-editenv)
-    defEntry=$(grub-editenv list | cut -d "=" -f 2)
-  elif  [ -f "/boot/grub2/grub.cfg" ]; then
-    echo "> Grub v2 found!"
-    grubV="grub2"
-    file="/boot/grub2/grub.cfg"
-    grub_reboot=$(which grub2-reboot)
-    grub_editenv=$(which grub2-editenv)
-    update_grub="$(which grub2-mkconfig) -o $file"
-    grub_reboot=$(which grub2-reboot)
-    grub_set_default=$(which grub2-set-default)
-    grub_editenv=$(which grub2-editenv)
-    defEntry=$(grub2-editenv list | cut -d "=" -f 2)
-  else
-    echo "No suitable grub found. Abort!"
-    exit
-  fi
+tempfile() {
+    tempprefix=$(basename "$0")
+    mktemp /tmp/${tempprefix}.XXXXXX
 }
 
 main() {
@@ -159,93 +135,17 @@ main() {
     fi    
   done
 
-  
-  # choice counter
-  i=0
-  # entry counter
-  j=0
-  
-  # counter for sub entries 0/1
-  submenu=0
-  
-  grub-ident
-  
-  echo -e "Choice\tEntry\tName"
-  while read -r line
-  do
-    if [[ $line == "submenu"* ]]; then
-      submenu=1
-      k=$j">"
-      j=0
-    fi
-  
-    if [[ $submenu == 1 ]]; then
-      entryid=$k$j
-  
-      # counter for open and close sub brackets {}
-      if [[ $line == *"{"* ]]; then
-        let "h=h+1"
-      fi
-      if [[ $line == *"}"* ]]; then
-        let "h=h-1"
-      fi
-    else
-      k=
-    fi
-  
-    # reset submenu when subenu entry close
-    if [[ $h == 0 ]]; then
-      submenu=0
-    fi
-  
-    if [[ $line == *"menuentry '"* ]]; then
-  #    echo $line |awk -F\' '/menuentry / {print $2}'
-  #    echo -e "$i \t$k$j \t$(echo $line |cut -d "'" -f 2)"
-  
-      #Grub
-      if [ "$grubV" == "grub" ]; then
-        if [ "$k$j" == "$defEntry" ]; then
-           echo -e "$i (*) \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
-        else
-           echo -e "$i \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
-        fi
-      fi
-  
-      # Grub2
-      if [ "$grubV" == "grub2" ]; then
-        if [ "$(echo "${line}" | cut -d "'" -f 2)" == "$defEntry" ]; then
-           echo -e "$i (*) \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
-        else
-           echo -e "$i \t$k$j \t$(echo "${line}" |cut -d "'" -f 2)"
-        fi
-      fi
-  
-      array[$i]=$k$j
-      let "j=j+1"
-      let "i=i+1"
-    fi
-  done < "$file"
-  
-  echo -n "Your choice: "
-  read -r sel_entry
-  
-  read -r -p "Boot kernel once or permanent? [o/p] " response
-  case $response in
-      [oO])
-          $grub_reboot "${array[$sel_entry]}"
-          $grub_editenv list
-          ;;
-      [pP])
-          sed -i 's/GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/g' /etc/default/grub
-          $update_grub
-          $grub_set_default "${array[$sel_entry]}"
-          $grub_editenv list
-          ;;
-      *)
-          echo "Wrong selection. Aborted."
-          exit
-          ;;
-  esac
+
+  if [ ! -z "$1" ] && [ ! -z "$2" ]; then
+    tar -cf - "${@: 1: $#-1}" |
+    pv -s "$( du -cs -BK --apparent-size "${@: 1: $#-1}" |
+      tail -n 1 |
+      cut -d "$(echo -e "\t")" -f 1)" |
+    ( cd "${@: $#}"; tar -xf - )
+  else
+    echo "Usage: cpstat <source>/ <target>/"
+  fi
 }
 
 main "$@"
+
