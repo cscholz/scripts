@@ -1,0 +1,18 @@
+[Unit]
+Description=Mount locale update cache to ram
+DefaultDependencies=no
+Before=rsyslog.service syslog.target systemd-journald.service sysinit.target shutdown.target
+After=local-fs.target
+Conflicts=shutdown.target
+#RequiresMountsFor=/var/cache /var/log
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/update2ram.sh start
+ExecStop=/usr/sbin/update2ram.sh stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
