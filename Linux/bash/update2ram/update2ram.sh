@@ -54,7 +54,7 @@ check_self_update() {
   self=$(basename ${0})
 
   # The base location from where to retrieve new versions of this script
-  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/dpdns/
+  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/update2ram/
 
   local myself_web_version
   myself_web_version=$(curl -s -r 0-50 "${update_base}/${self}" | \
