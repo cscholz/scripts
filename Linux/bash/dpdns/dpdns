@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20170813.01
+Version=20181201.01
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -73,7 +73,7 @@ function dnsbl_update_check() {
         cat /tmp/blacklist > ${local_path}
 
                 if [[ "${3}" == "dnsmasq" ]]; then
-                  sed "s/127.0.0.1/$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)/g" -i $local_path
+#                 sed "s/127.0.0.1/$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)/g" -i $local_path
                   echo "> Update dnsbl with eth0 ip"
                 fi
 
@@ -228,7 +228,7 @@ function dnsbl_convert_to_dnsmasq {
         else
           echo "${j}" | sed s'/\/\//#/g' >> "${2}"
           echo "${j}" | sed 's/\,//g' | \
-                    awk '{print "address=/"$2"/192.168.10.1"}' >> "${2}"
+                    awk '{print "address=/"$2"/0.0.0.0"}' >> "${2}"
         fi
         let _start=_start+1
         progressbar "${_start}" "${_end}"
@@ -361,7 +361,8 @@ function dnsbl_add_record() {
 
     if [[ "${3}" == "dnsmasq" ]]; then
       local eth0_ip
-      eth0_ip=$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)
+#     eth0_ip=$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)
+      eth0_ip=0.0.0.0
       echo "#$str_date $domain$comment" >> "${blacklist_file}"
       echo "address=/$domain/${eth0_ip}" >>  "${blacklist_file}"
     fi
