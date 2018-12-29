@@ -96,7 +96,7 @@ check_self_update() {
   local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
 
   local myself_web_version
-  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.)" )
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.*)" )
   echo "Web:" "${myself_web_version}"
   myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
   echo "Local:" "${myself_local_version}"
