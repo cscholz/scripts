@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20180710.01
+Version=20190324.01
 # update2ram
 # Scripts mounts (open)SUSE and Fedora update folder to ram to reduce
 # disk write operations on usb sticks
@@ -14,10 +14,11 @@ function mount_cache() {
   #######################################
 
 
-  local package_folder=/var/cache/zypp/
-  #package_folder=/var/cache/dnf/
+  #local package_folder=/var/cache/zypp/ | SUSE
+  #local package_folder=/var/cache/dnf/  | Fedora
+  local package_folder=/var/cache/apt/
 
-  find $package_folder -maxdepth 1 -type d -name packages -print0 | while IFS= read -r -d $'\0' line; do
+  find $package_folder -maxdepth 0 -type d -print0 | while IFS= read -r -d $'\0' line; do
       echo "$line mounted to ram"
       mount -t tmpfs none "$line"
   done
@@ -32,10 +33,11 @@ function umount_cache() {
   #######################################
 
   
-  local package_folder=/var/cache/zypp/
-  #package_folder=/var/cache/dnf/
+  #local package_folder=/var/cache/zypp/ | SUSE
+  #local package_folder=/var/cache/dnf/  | Fedora
+  local package_folder=/var/cache/apt/
   
-  find $package_folder -maxdepth 1 -type d -name packages -print0 | while IFS= read -r -d $'\0' line; do
+  find $package_folder -maxdepth 0 -type d -print0 | while IFS= read -r -d $'\0' line; do
       echo "$line unmounted from ram"
       umount "$line"
   done
