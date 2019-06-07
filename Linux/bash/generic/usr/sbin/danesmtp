@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20190605.02
+Version=20190607.01
 
 # Description:  Make full text search easy
 
