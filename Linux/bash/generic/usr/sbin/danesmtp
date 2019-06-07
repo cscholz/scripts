@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20190605.01
+Version=20190605.02
 
 # Description:  Make full text search easy
 
@@ -148,3 +148,4 @@ main() {
 }
 
 main "$@"
+
