@@ -1,0 +1,95 @@
+#!/bin/bash
+Version=0.1
+
+function color() {
+
+        if [ "${2}" == "green" ]; then
+#                echo -e "\033[40;1;32m"${1}"\033[0m"
+                 echo -e "\e[32m"${1}"\e[39m"
+        fi
+
+        if [ "${2}" == "red" ]; then
+#                echo -e "\033[40;1;31m"${1}"\033[0m"
+                 echo -e "\e[31m"${1}"\e[39m"
+        fi
+        if [ "${2}" == "yellow" ]; then
+#                echo -e "\033[40;1;33m"${1}"\033[0m"
+                 echo -e "\e[33m"${1}"\e[39m"
+        fi
+}
+
+public_dns="1.1.1.1"
+postmaster=postmaster@o-o-s.de
+
+for i in "${@}" ; do
+  if [[ "${i}" == "-V" ]] ; then
+     echo  "$(basename "${0}")" "${Version}"
+
+     echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
+     echo "Dieses Script ist unter GPL v.2. veröffentlicht"
+     echo
+     echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
+     exit 1
+  fi
+done
+
+if [ -z "$1" ] ; then
+  echo "Usage: $0 {port} {domain1.tls} {optional: domain2.tld domain3.tld}"
+fi
+
+
+for i in "${@:2}"; do
+
+if [ "${1}" -eq "25" ]; then
+	domain="$(dig @"${public_dns}" "${i}" MX +short | awk '{print $2}')"
+else
+	domain="${i}"
+fi
+        port="${1}"
+
+	echo ""
+	echo "DANE record"
+	echo "---------------------------------"
+	temp="$(mktemp)"
+	trap "rm -f ${temp}*" 0 1 2 5 15
+
+	DNSResult="$(dig @"${public_dns}" _"${port}"._tcp."${domain}" IN TLSA +short)"
+
+        echo "DNS TLSA Records:" > "${temp}"
+        echo "------------------" >> "${temp}"
+        while read -r line; do
+            echo "${line}" | awk '{print "_'$port'._tcp.'$domain'. IN TLSA "$1" " $2" "$3" "$4$5}' >> $temp
+        done <<< "${DNSResult}"
+	echo >> "${temp}"
+	echo "Required TLSA Records:" >> "${temp}"
+	echo "---------------------------------------" >> "${temp}"
+
+        if [ "${port}" -eq "25" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls smtp"; fi
+        if [ "${port}" -eq "21" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls ftp"; fi
+        nohup openssl s_client -showcerts -verify 5 -connect ${domain}:${port} ${smtp_parameter} < /dev/null | awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; out="'$temp'"a".pem"; print >out}'
+
+        counter="0"
+        for cert in "${temp}"*.pem;
+        do
+		failed=0
+                if [ "${counter}" -ne "2" ]; then counter=3; fi
+                openssl x509 -noout -subject -in "${cert}"
+                tlsa_record=$(openssl x509 -noout -pubkey -in "${cert}" | openssl rsa -pubin -outform DER 2>/dev/null | openssl sha256 | tr '[:lower:]' '[:upper:]' | awk '{print "_'$port'._tcp.'$domain'. IN TLSA '$counter' 1 1 " $2}';)
+
+                if grep "${tlsa_record}" "${temp}" > /dev/null
+                then
+                   echo "${tlsa_record} $(color "(DNS match)" green)"
+                else
+                   echo "${tlsa_record} $(color "(DNS mismatch)" red)"
+		   echo "${tlsa_record}" >> $temp
+		   failed=1
+                fi
+
+                counter=2
+                echo
+        done
+
+	if [ "${failed}" -eq "1" ]; then mutt -s "[$i] - TLSA failed for Port $1" "${postmaster}" < $temp; fi
+
+done
+
