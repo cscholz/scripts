@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20191103.01
+Version=20191103.02
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -240,6 +240,67 @@ function dnsbl_convert_to_dnsmasq {
   else
     echo "Usage: ${0} {bind9-source-file} {dnsmasq-target-file}"
   fi
+}
+
+function upload_domain_blacklist {
+  #######################################
+  # Extract domains from bind blacklist
+  # Arguments:
+  #   $1 filename for upload
+  # Returns:
+  #   None
+  #######################################
+
+  checkpackage ncftp
+  local upload_server=cscholz.io
+  local upload_file
+  upload_file=/tmp/$1
+
+  cd /tmp
+  curl -s ${BindWeb} | sed '/^\//d' |awk '{print $2}' |sed 's/"//g' >> ${upload_file}
+
+  # Query username and password
+  unset password
+  unset username
+  unset charcount
+
+  echo "Server: ${upload_server}"
+  echo -n "Webdav Username:"
+  read -r username
+  echo -n "Enter password: "
+  stty -echo
+  charcount=0
+  while IFS= read -p "${prompt}" -r -s -n 1 char
+  do
+    # Enter - accept password
+    if [[ ${char} == $'\0' ]] ; then
+      break
+    fi
+    # Backspace
+    if [[ ${char} == $'\177' ]] ; then
+      if [ ${charcount} -gt 0 ] ; then
+        charcount=$((charcount-1))
+        prompt=$'\b \b'
+        password="${password%?}"
+      else
+        prompt=''
+        fi
+    else
+      charcount=$((charcount+1))
+      prompt='*'
+      password+="${char}"
+    fi
+  done
+  echo
+  stty echo
+
+# push files
+ncftp -u "${username}" -p "${password}" "${upload_server}"<<ENDFTP
+cd dpdns.cscholz.io
+put ${upload_file}
+set confirm-close no
+quit
+ENDFTP
 }
 
 function dnsbl_convert_to_bind {
@@ -545,6 +606,7 @@ main() {
     echo "  6)   Upload DNSBL"
     echo "  7)   Raise DNSBL Version"
     echo "  8)   Convert DNSMasq > Bind"
+    echo "  9)   Upload domain blocklist"
     echo
     echo "  add) Add domain to blacklist."
     echo "  rm)  Remove domain from blacklist"
@@ -572,6 +634,7 @@ main() {
          ;;
     7)   dnsbl_raise_version ${MasqLocal};;
     8)   dnsbl_convert_to_bind ${MasqLocal} ${BindLocal};;
+    9)   upload_domain_blacklist domains-blacklist.txt;;
     add) test -f "/etc/bind/blacklist.bind" && dnsbl_add_record "${2}" "/etc/bind/blacklist.bind" bind9 "${3}"
          test -f "/etc/dnsmasq.d/blacklist.dnsmasq" && dnsbl_add_record "${2}" "/etc/dnsmasq.d/blacklist.dnsmasq" dnsmasq "${3}"
          ;;
