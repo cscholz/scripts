@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20181201.01
+Version=20191103.01
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -548,6 +548,7 @@ main() {
     echo
     echo "  add) Add domain to blacklist."
     echo "  rm)  Remove domain from blacklist"
+    echo "  ld)  List all blocked domains"
     echo "  u)   Update"
     echo "  h)   help"
     echo "  x)   Exit"
@@ -577,6 +578,7 @@ main() {
     rm)  test -f "/etc/bind/blacklist.bind" && dnsbl_rm_record "${2}" "/etc/bind/blacklist.bind"
          test -f "/etc/dnsmasq.d/blacklist.dnsmasq" && dnsbl_rm_record "${2}" "/etc/dnsmasq.d/blacklist.dnsmasq"
          ;;
+    ld)  curl -s $BindWeb | sed '/^\//d' |awk '{print $2}' |sed 's/"//g';;
     u)   check_self_update;;
     h)   show_help;;
     -?)  show_help;;
