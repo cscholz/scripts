@@ -155,6 +155,11 @@ main() {
        echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
        exit 1
     fi
+    
+    if [[ "${i}" == "-u" ]] ; then
+      check_self_update
+      exit 1
+    fi    
   done
 
   for i in "${@:2}"; do
