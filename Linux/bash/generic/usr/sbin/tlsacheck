@@ -1,69 +1,195 @@
-#!/bin/bash
-Version=0.1
+#!/usr/bin/env bash
+Version=20191109.01
 
-function color() {
+# Description: Script check if the TLSA record for the active certificate matches the DNS published one.
 
-        if [ "${2}" == "green" ]; then
-#                echo -e "\033[40;1;32m"${1}"\033[0m"
-                 echo -e "\e[32m"${1}"\e[39m"
-        fi
-
-        if [ "${2}" == "red" ]; then
-#                echo -e "\033[40;1;31m"${1}"\033[0m"
-                 echo -e "\e[31m"${1}"\e[39m"
-        fi
-        if [ "${2}" == "yellow" ]; then
-#                echo -e "\033[40;1;33m"${1}"\033[0m"
-                 echo -e "\e[33m"${1}"\e[39m"
-        fi
-}
-
-public_dns="1.1.1.1"
-postmaster=postmaster@o-o-s.de
-
-for i in "${@}" ; do
-  if [[ "${i}" == "-V" ]] ; then
-     echo  "$(basename "${0}")" "${Version}"
-
-     echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
-     echo "Dieses Script ist unter GPL v.2. veröffentlicht"
-     echo
-     echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
-     exit 1
-  fi
-done
-
-if [ -z "$1" ] ; then
+if [ -z "${1}" ] ; then
   echo "Usage: $0 {port} {domain1.tls} {optional: domain2.tld domain3.tld}"
 fi
 
+set -u
+# -e: exit immidiately when a command fails. If piped check only the last command error code.
+#     Use ||true for commands allowed to fail.
+# -u: treat unset variable as an error and exit immidiately
+# -o pipefail: same as -e but for all commands in a pipe.
+# -x: debug option
 
-for i in "${@:2}"; do
+run_self_update() {
+  #######################################
+  # Download a new copy of myself and replace myself with it
+  # Arguments:
+  #   $1 $0 (script name)
+  #   $2 update where the new version is stored
+  # Returns:
+  #   None
+  #######################################
 
-if [ "${1}" -eq "25" ]; then
-	domain="$(dig @"${public_dns}" "${i}" MX +short | awk '{print $2}')"
+  self=${1}
+
+  # The base location from where to retrieve new versions of this script
+  update_base=${2}
+
+  echo "> Performing self-update..."
+
+  # Download new version
+  echo -n "> Downloading latest version..."
+  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
+    echo "Failed: Error while trying to wget new version!"
+    echo "File requested: ${update_base}/${self}"
+    exit 1
+  fi
+  echo "Done."
+
+  # Download MD5 of update
+  echo -n "> Downloading md5 sum..."
+  if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
+    echo "Failed: Error while trying to wget md5sum!"
+    echo "File requested: ${update_base}${self}.md5"
+    exit 1
+  fi
+  echo "Done."
+
+  # Checking MD5 sum
+  echo -n "> Checking MD5 sum..."
+  web_md5=$(cat "${0}".md5 | awk '{print $1}')
+  local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
+  if [[ $web_md5 != "${local_md5}" ]]; then
+    echo "Failed. Abort!"
+    echo "${web_md5} / ${local_md5}"
+    rm "${0}.md5"
+    exit 0
+  fi
+  echo "Ok"
+  rm "${0}.md5"
+
+  # Copy over modes from old version
+  OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
+  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
+    echo "Failed: Error while trying to set mode on ${0}.tmp."
+    exit 1
+  fi
+
+  # Spawn update script
+  cat > updateScript.sh << EOF
+#!/bin/bash
+# Overwrite old file with new
+if mv "${0}.tmp" "${0}"; then
+  echo "Done. Update complete."
+  rm \${0}
 else
-	domain="${i}"
+  echo "Failed. Please try again!"
+  rm \${0}
 fi
-        port="${1}"
+EOF
 
-	echo ""
-	echo "DANE record"
-	echo "---------------------------------"
-	temp="$(mktemp)"
-	trap "rm -f ${temp}*" 0 1 2 5 15
+  echo -n "> Start update process..."
+  exec /bin/bash updateScript.sh
+}
 
-	DNSResult="$(dig @"${public_dns}" _"${port}"._tcp."${domain}" IN TLSA +short)"
+check_self_update() {
+  #######################################
+  # Check for a new version of myself
+  # Arguments:
+  #   $1 $0 (script name)
+  # Returns:
+  #   None
+  #######################################
 
-        echo "DNS TLSA Records:" > "${temp}"
-        echo "------------------" >> "${temp}"
-        while read -r line; do
-            echo "${line}" | awk '{print "_'$port'._tcp.'$domain'. IN TLSA "$1" " $2" "$3" "$4$5}' >> $temp
+  self=$(basename "${0}")
+  # The base location from where to retrieve new versions of this script
+  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+
+  local myself_web_version
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
+  echo "Web:" "${myself_web_version}"
+  myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
+  echo "Local:" "${myself_local_version}"
+  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
+          read -p "Update (y/N) " -r
+    echo    # (optional) move to a new line
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+      run_self_update "${self}" "${update_base}"
+    fi
+  else
+          echo "No update available (v.${myself_local_version})"
+        fi
+}
+
+tempfile() {
+    tempprefix=$(basename "$0")
+    mktemp /tmp/${tempprefix}.XXXXXX
+}
+
+
+function color() {
+
+  if [ "${2}" == "green" ]; then
+#   echo -e "\033[40;1;32m"${1}"\033[0m"
+    echo -e "\e[32m"${1}"\e[39m"
+  fi
+
+  if [ "${2}" == "red" ]; then
+#   echo -e "\033[40;1;31m"${1}"\033[0m"
+    echo -e "\e[31m"${1}"\e[39m"
+  fi
+
+  if [ "${2}" == "yellow" ]; then
+#   echo -e "\033[40;1;33m"${1}"\033[0m"
+    echo -e "\e[33m"${1}"\e[39m"
+  fi
+}
+
+main() {
+  public_dns="127.0.0.1"
+  postmaster=root@localhost
+
+  for i in "${@}" ; do
+    if [[ "${i}" == "-V" ]] ; then
+       echo  "$(basename "${0}")" "${Version}"
+
+       echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
+       echo "Dieses Script ist unter GPL v.2. veröffentlicht"
+       echo
+       echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
+       exit 1
+    fi
+  done
+
+  for i in "${@:2}"; do
+    # Check if A record exists
+    host ${i} | grep "NXDOMAIN" >/dev/null
+    if [ $? -eq 0 ]; then
+      echo "No A record found for ${i}"
+      exit 2
+    else
+      if [ "${1}" -eq "25" ]; then
+        domain="$(dig @"${public_dns}" "${i}" MX +short | awk '{print $2}')"
+      else
+        domain="${i}"
+      fi
+    
+      port="${1}"
+
+      echo ""
+      echo "DANE record"
+      echo "---------------------------------"
+      temp=$(tempfile)
+      trap "rm -f ${temp}*" 0 1 2 5 15
+
+      DNSResult="$(dig @"${public_dns}" _"${port}"._tcp."${domain}" IN TLSA +short)"
+
+      echo "DNS TLSA Records:" > "${temp}"
+      echo "------------------" >> "${temp}"
+      while read -r line; do
+        echo "${line}" | awk '{print "_'$port'._tcp.'$domain'. IN TLSA "$1" " $2" "$3" "$4$5}' >> $temp
         done <<< "${DNSResult}"
-	echo >> "${temp}"
-	echo "Required TLSA Records:" >> "${temp}"
-	echo "---------------------------------------" >> "${temp}"
-
+        echo >> "${temp}"
+        echo "Required TLSA Records:" >> "${temp}"
+        echo "---------------------------------------" >> "${temp}"
+  
+        local smtp_parameter=""
         if [ "${port}" -eq "25" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls smtp"; fi
         if [ "${port}" -eq "21" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls ftp"; fi
         nohup openssl s_client -showcerts -verify 5 -connect ${domain}:${port} ${smtp_parameter} < /dev/null | awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; out="'$temp'"a".pem"; print >out}'
@@ -71,25 +197,29 @@ fi
         counter="0"
         for cert in "${temp}"*.pem;
         do
-		failed=0
-                if [ "${counter}" -ne "2" ]; then counter=3; fi
-                openssl x509 -noout -subject -in "${cert}"
-                tlsa_record=$(openssl x509 -noout -pubkey -in "${cert}" | openssl rsa -pubin -outform DER 2>/dev/null | openssl sha256 | tr '[:lower:]' '[:upper:]' | awk '{print "_'$port'._tcp.'$domain'. IN TLSA '$counter' 1 1 " $2}';)
+          failed=0
+          if [ "${counter}" -ne "2" ]; then counter=3; fi
+          openssl x509 -noout -subject -in "${cert}"
+          tlsa_record=$(openssl x509 -noout -pubkey -in "${cert}" | openssl rsa -pubin -outform DER 2>/dev/null | openssl sha256 | tr '[:lower:]' '[:upper:]' | awk '{print "_'$port'._tcp.'$domain'. IN TLSA '$counter' 1 1 " $2}';)
+#         tlsa_record=$(openssl x509 -noout -pubkey -in "${cert}" | openssl rsa -pubin -outform DER 2>/dev/null | openssl sha256 | awk '{print "_'$port'._tcp.'$domain'. IN TLSA '$counter' 1 1 " $2}';)
 
-                if grep "${tlsa_record}" "${temp}" > /dev/null
-                then
-                   echo "${tlsa_record} $(color "(DNS match)" green)"
-                else
-                   echo "${tlsa_record} $(color "(DNS mismatch)" red)"
-		   echo "${tlsa_record}" >> $temp
-		   failed=1
-                fi
-
-                counter=2
-                echo
+          if grep "${tlsa_record}" "${temp}" > /dev/null
+          then
+            echo "${tlsa_record} $(color "(DNS match)" green)"
+          else
+            echo "${tlsa_record} $(color "(DNS mismatch)" red)"
+            echo "${tlsa_record}" >> $temp
+          failed=1
+          fi
+  
+          counter=2
+          echo
         done
+        rm "${temp}"* > /dev/null
+  
+        if [ "${failed}" -eq "1" ]; then mutt -s "[$i] - TLSA failed for Port $1" "${postmaster}" < $temp; fi
+    fi
+  done
+}
 
-	if [ "${failed}" -eq "1" ]; then mutt -s "[$i] - TLSA failed for Port $1" "${postmaster}" < $temp; fi
-
-done
-
+main "$@"
