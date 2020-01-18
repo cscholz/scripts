@@ -510,7 +510,8 @@ run_self_update() {
   local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
   if [[ $web_md5 != "${local_md5}" ]]; then
     echo "Failed. Abort!"
-    echo "${web_md5} / ${local_md5}"
+    echo "Web-MD5:   ${web_md5}"
+    echo "Local-MD5: ${local_md5}"
     rm "${0}.md5"
     exit 0
   fi
