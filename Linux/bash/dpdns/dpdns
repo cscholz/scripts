@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20191103.02
+Version=20201018.01
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -214,6 +214,11 @@ function dnsbl_convert_to_dnsmasq {
   #######################################
 
   if [[ -n "${2}" ]] ; then
+    if [[ ! -d "$(dirname ${2})" ]]; then
+      echo "Folder ${2} does not exist. Creating..."
+      mkdir -p "$(dirname ${2})"
+    fi
+
     if [[ -f "${1}" ]]; then
       echo Converting bind9 file to dnsmasq file format:
 
