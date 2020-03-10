@@ -1,0 +1,299 @@
+#!/bin/bash
+Version=20200310.00
+
+# Description:
+# Script queried dns ip of given fqdn an compares these with the current public ip of the device.
+# If it is the same a stat file is writen. Next try if the file gets older then 10 minutes.
+#
+# Requiremets: Subdomain like ddns.cscholz.io and a authorized key to write entries
+#
+# Variables:
+# ${DNS_RECORD}:     fqdn to write
+# ${DNS_SERVER}:     dns subdomain to write to
+# ${DNS_ZON}:
+# ${DNS_KEY_FILE}:   key file to authenticate for with write permissions
+# ${DNS_TTL}:        max dns ttl to write
+# $[DNS_Server}:     DNS server to query for fqdn ip
+# ${STATE_FILE}:     file to write stat file (ip)
+# ${IP_DETECT_URL}:  URL must send public ip in plaintext
+# ${PRE_UPDATE_CMD}: any command to run before the update command
+# ${LOGFILE}:        file to write log files
+# ${MTIME}:          mtime used for search command
+#
+# Style-Guide: https://google.github.io/styleguide/shell.xml#Case_statement
+
+set -eo pipefail
+# -e: exit immidiately when a command fails. If piped check only the last command error code.
+#     Use ||true for commands allowed to fail.
+# -u: treat unset variable as an error and exit immidiately
+# -o pipefail: same as -e but for all commands in a pipe.
+# -x: debug option
+
+DNS_RECORDS="rnas.ddns.cscholz.io"
+DNS_SERVER=ddns.cscholz.io
+DNS_ZONE=ddns.cscholz.io
+DNS_KEY_FILE="/root/scripts/ddns_update.key"
+DNS_TTL="60"
+DNS_Server="mx02.o-o-s.de"
+STATE_FILE="/tmp/custom_ddns_last_ip"
+#IP_DETECT_URL="http://checkip.dyndns.org/"
+IP_DETECT_URL="https://checkip.cscholz.io/"
+PRE_UPDATE_CMD=""
+LOGFILE=/tmp/$DNS_RECORDS
+UPDATE=0
+MTIME=+10
+
+run_self_update() {
+  #######################################
+  # Download a new copy of myself and replace myself with it
+  # Arguments:
+  #   $1 $0 (script name)
+  #   $2 update where the new version is stored
+  # Returns:
+  #   None
+  #######################################
+
+  self=${1}
+
+  # The base location from where to retrieve new versions of this script
+  update_base=${2}
+
+  echo "> Performing self-update..."
+
+  # Download new version
+  echo -n "> Downloading latest version..."
+  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
+    echo "Failed: Error while trying to wget new version!"
+    echo "File requested: ${update_base}/${self}"
+    exit 1
+  fi
+  echo "Done."
+
+  # Download MD5 of update
+  echo -n "> Downloading md5 sum..."
+  if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
+    echo "Failed: Error while trying to wget md5sum!"
+    echo "File requested: ${update_base}${self}.md5"
+    exit 1
+  fi
+  echo "Done."
+
+  # Checking MD5 sum
+  echo -n "> Checking MD5 sum..."
+  web_md5=$(cat ${0}.md5 | awk '{print $1}')
+  local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
+  if [[ $web_md5 != "${local_md5}" ]]; then
+    echo "Failed. Abort!"
+    echo "${web_md5} / ${local_md5}"
+    rm "${0}.md5"
+    exit 0
+  fi
+  echo "Ok"
+  rm "${0}.md5"
+
+  # Copy over modes from old version
+  OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
+  if ! chmod ${OCTAL_MODE} "${0}.tmp" ; then
+    echo "Failed: Error while trying to set mode on ${0}.tmp."
+    exit 1
+  fi
+
+  # Spawn update script
+  cat > updateScript.sh << EOF
+#!/bin/bash
+# Overwrite old file with new
+if mv "${0}.tmp" "${0}"; then
+  echo "Done. Update complete."
+  rm \${0}
+else
+  echo "Failed. Please try again!"
+  rm \${0}
+fi
+EOF
+
+  echo -n "> Start update process..."
+  exec /bin/bash updateScript.sh
+}
+
+check_self_update() {
+  #######################################
+  # Check for a new version of myself
+  # Arguments:
+  #   $1 $0 (script name)
+  # Returns:
+  #   None
+  #######################################
+
+  self=$(basename "${0}")
+  # The base location from where to retrieve new versions of this script
+  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+
+  local myself_web_version
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
+  echo "Web:" "${myself_web_version}"
+  myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
+  echo "Local:" "${myself_local_version}"
+  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
+          read -p "Update (y/N) " -r
+    echo    # (optional) move to a new line
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+      run_self_update "${self}" "${update_base}"
+    fi
+  else
+          echo "No update available (v.${myself_local_version})"
+        fi
+}
+
+function check_nsupdate {
+  #######################################
+  # Checks if package nsupdate is installed
+  # Arguments:
+  #   None
+  # Returns:
+  #   None
+  #######################################
+
+  REPLY="y"
+  if ! which nsupdate > /dev/null; then
+#     echo -e "Package \"bind\" not found! Install? (y/N) \c"
+#     read REPLY
+     if [ -z ${REPLY} ]; then
+       REPLY="n"
+     fi
+     if [ ${REPLY} = "y" ]; then
+        apt-get install dnsutils
+     else
+       exit
+    fi
+  fi
+}
+
+function get_public_ip {
+  #######################################
+  # Get public ip from a website
+  # Arguments:
+  #   url to use for detection
+  # Returns:
+  #   None
+  #######################################
+
+  ip=`curl -4 -s -f ${1} | grep -o "[[:digit:].]\+"`
+# ip=$(dig +short myip.opendns.com @resolver1.opendns.com)
+}
+
+
+function get_a_record {
+  #######################################
+  # Get a record
+  # Arguments:
+  #   fqdn to check
+  #   dns server to user for query
+  # Returns:
+  #   None
+  #######################################
+
+  DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}')
+
+  echo `date` > /tmp/${DNS_RECORDS}
+  echo DNS ${DNS_IP}  >> /tmp/${DNS_RECORDS}
+  echo `date`
+  echo DNS IP:\ \ \ \  ${DNS_IP}
+  echo Current IP: ${ip}
+  # remove stat file when older then 10 minutes
+  find /tmp/ -type f -name custom_ddns_last_ip -mmin "${MTIME}" -exec rm {} \;
+}
+
+function dns_update_check {
+  #######################################
+  # Get public ip from a website
+  # Arguments:
+  #   url to use for detection
+  # Returns:
+  #   None
+  #######################################
+
+  if [ -z "${ip}" ]; then
+    echo "Can't get the public IP, no Internet connection?" >> /tmp/${DNS_RECORDS}
+    echo "Can't get the public IP, no Internet connection?"
+    logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
+    exit 1
+  fi
+
+  if [ ! -f ${STATE_FILE} ]; then
+    echo State file: does not exist, check dns  >> /tmp/${DNS_RECORDS}
+    echo State file: does not exist, check dns
+    logger -t "ddnsupdate" "state file does not exist, check dns."
+    UPDATE=1
+  else
+    STAT_FILE_AGE=`stat -c %Z ${STATE_FILE}`; NOW=`date +%s`; (( DIFF = (NOW - STAT_FILE_AGE) )); STAT_FILE_AGE="$[600-$DIFF]";
+    echo State file: to early for doublecheck  >> /tmp/${DNS_RECORDS}
+    echo "State file: to early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
+    logger -t "ddnsupdate" "to early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
+    exit 1
+  fi
+
+  if [ "${UPDATE}" == "1" ]; then
+    DNS_IP=$(host ${DNS_RECORDS} $DNS_Server | grep "has address" | awk '{print $4}')
+
+    echo DNS: ${DNS_IP} >> /tmp/${DNS_RECORDS}
+    echo current: ${ip} >> /tmp/${DNS_RECORDS}
+    if [ "${DNS_IP}" != "${ip}" ]; then
+      echo DDNS-Status: need update >> /tmp/${DNS_RECORDS}
+      echo "DDNS-Status: need update (DNS=${DNS_IP}, IP=${ip})"
+      logger -t "ddnsupdate" "need update. (DNS=${DNS_IP}, IP=${ip})"
+      #some preupdate commands?
+      ${PRE_UPDATE_CMD}
+      #creating /usr/bin/nsupdate commands
+      commands="server ${DNS_SERVER}\nzone ${DNS_ZONE}\n"
+      for i in ${DNS_RECORDS}; do
+  #      commands="$commands\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\n"
+         commands="${commands}\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\nupdate delete ${i} txt\nupdate add ${i} $DNS_TTL TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
+      done
+
+      commands="${commands}\nsend\n"
+      #running dns update
+      echo -e "${commands}" | /usr/bin/nsupdate -k ${DNS_KEY_FILE}
+
+      nsupdate_status=${?}
+     #checking nsupdate exit status
+      if [ ${nsupdate_status} -ne 0 ]; then
+        echo "DNS update failed! Wrong configuration?" >> /tmp/${DNS_RECORDS}
+        echo "DNS update failed! Wrong configuration?"
+        logger -t "ddnsupdate" "DNS update failed! Wrong configuration?"
+#        exit 1
+      else
+        logger -t "ddnsupdate" "${DNS_RECORDS} updated to ${ip}."
+        echo ${DNS_RECORDS} updated to ${ip} >> /tmp/${DNS_RECORDS}
+        echo "${DNS_RECORDS} updated to ${ip}"
+        #writing our ip to state file
+        echo "${ip}">$STATE_FILE
+      fi
+    else
+      echo DDNS-Status: update not neccessary >> /tmp/${DNS_RECORDS}
+      echo "DDNS-Status: update not neccessary (DNS=${DNS_IP}, IP=${ip})"
+      logger -t "ddnsupdate" "update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
+      echo "${ip}">${STATE_FILE}
+#      exit 1
+    fi
+  else
+    echo exit
+  fi
+}
+
+main() {
+  for i in "$@" ; do
+    if [[ "${i}" == "-u" ]] ; then
+      check_self_update
+      exit 1
+    fi
+  done
+
+  check_nsupdate
+  get_public_ip ${IP_DETECT_URL}
+  get_a_record ${DNS_RECORDS} ${DNS_Server}
+  dns_update_check
+}
+
+main "$@"
