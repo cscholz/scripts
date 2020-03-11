@@ -1,5 +1,5 @@
 # Description
-The script ddnsupdate can be used to update an host records in an bind delegeated sub domain
+The script ddnsupdate can be used to update a host record in an bind delegated domain
 for a client with a dynamic assigend public ip.
 The function is comparable with dyndns but without the need to use third party service.
 
