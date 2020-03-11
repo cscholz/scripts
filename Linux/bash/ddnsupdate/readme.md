@@ -4,13 +4,16 @@ for a client with a dynamic assigend public ip.
 The function is comparable with dyndns but without the need to use third party service.
 
 # Usage
- $ ddnsupdate {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
+
+     $ ddnsupdate {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
 
 ## Update mechanism
-$ ddnsupdate -u
+
+    $ ddnsupdate -u
 
 ## Debug
-$ ddnsupdate -v
+
+    $ ddnsupdate -v
 
 # Requirementes
 ## Create key
