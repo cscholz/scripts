@@ -51,3 +51,12 @@ On the client side the key is exactly the same as on the server side:
       algorithm HMAC_SHA512;
       secret "XJkUlJPh0k+OX5GDJ0SqD4yWcA5BvIUY7HGNbdkaH3K1Rgjlx5Tz318GhvOtQDcZj8QZRBzxeeF21ELVpW0U2g==";
     };
+
+## Update check process
+```mermaid
+sequenceDiagram
+Client ->> WebServer: get public ip
+Client ->> DNSServer: get a record?
+Note left of Client: 1. no a rec. = update<br>2. unequal = update<br>3. >10 min = update
+Client-->> DNSServer: Update dns record
+```
