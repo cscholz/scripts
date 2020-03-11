@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20200311.04
+Version=20200311.05
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -131,7 +131,7 @@ check_self_update() {
 
   local myself_web_version
   myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
-  echo "Web:" "${myself_web_version}"
+  echo "Web:  " "${myself_web_version}"
   myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
   echo "Local:" "${myself_local_version}"
   if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
