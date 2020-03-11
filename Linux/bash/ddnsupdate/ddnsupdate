@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20200310.01
+Version=20200311.01
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -9,11 +9,10 @@ Version=20200310.01
 #
 # Variables:
 # ${DNS_RECORD}:     fqdn to write
-# ${DNS_SERVER}:     dns subdomain to write to
-# ${DNS_ZON}:
+# ${DNS_ZONE}:       dns zone to write server
+# ${DNS_SERVER}:     dns server to query and use for nsupdate
 # ${DNS_KEY_FILE}:   key file to authenticate for with write permissions
 # ${DNS_TTL}:        max dns ttl to write
-# $[DNS_Server}:     DNS server to query for fqdn ip
 # ${STATE_FILE}:     file to write stat file (ip)
 # ${IP_DETECT_URL}:  URL must send public ip in plaintext
 # ${PRE_UPDATE_CMD}: any command to run before the update command
@@ -29,17 +28,15 @@ set -eo pipefail
 # -o pipefail: same as -e but for all commands in a pipe.
 # -x: debug option
 
-DNS_RECORDS="rnas.ddns.cscholz.io"
-DNS_SERVER=ddns.cscholz.io
-DNS_ZONE=ddns.cscholz.io
-DNS_KEY_FILE="/root/scripts/ddns_update.key"
+DNS_RECORD="${1}.${2}"
+DNS_ZONE="${2}"
+DNS_SERVER="${3}"
+DNS_KEY_FILE="${4}"
 DNS_TTL="60"
-DNS_Server="mx02.o-o-s.de"
 STATE_FILE="/tmp/custom_ddns_last_ip"
-#IP_DETECT_URL="http://checkip.dyndns.org/"
-IP_DETECT_URL="https://checkip.cscholz.io/"
+IP_DETECT_URL="${5}"
 PRE_UPDATE_CMD=""
-LOGFILE=/tmp/$DNS_RECORDS
+LOGFILE=/tmp/$DNS_RECORD
 UPDATE=0
 MTIME=+10
 
@@ -196,8 +193,8 @@ function get_a_record {
 
   DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}')
 
-  echo `date` > /tmp/${DNS_RECORDS}
-  echo DNS ${DNS_IP}  >> /tmp/${DNS_RECORDS}
+  echo `date` > /tmp/${DNS_RECORD}
+  echo DNS ${DNS_IP}  >> /tmp/${DNS_RECORD}
   echo `date`
   echo DNS IP:\ \ \ \  ${DNS_IP}
   echo Current IP: ${ip}
@@ -215,39 +212,39 @@ function dns_update_check {
   #######################################
 
   if [ -z "${ip}" ]; then
-    echo "Can't get the public IP, no Internet connection?" >> /tmp/${DNS_RECORDS}
+    echo "Can't get the public IP, no Internet connection?" >> /tmp/${DNS_RECORD}
     echo "Can't get the public IP, no Internet connection?"
     logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
     exit 1
   fi
 
   if [ ! -f ${STATE_FILE} ]; then
-    echo State file: does not exist, check dns  >> /tmp/${DNS_RECORDS}
+    echo State file: does not exist, check dns  >> /tmp/${DNS_RECORD}
     echo State file: does not exist, check dns
     logger -t "ddnsupdate" "state file does not exist, check dns."
     UPDATE=1
   else
     STAT_FILE_AGE=`stat -c %Z ${STATE_FILE}`; NOW=`date +%s`; (( DIFF = (NOW - STAT_FILE_AGE) )); STAT_FILE_AGE="$[600-$DIFF]";
-    echo State file: to early for doublecheck  >> /tmp/${DNS_RECORDS}
+    echo State file: to early for doublecheck  >> /tmp/${DNS_RECORD}
     echo "State file: to early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
     logger -t "ddnsupdate" "to early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
     exit 1
   fi
 
   if [ "${UPDATE}" == "1" ]; then
-    DNS_IP=$(host ${DNS_RECORDS} $DNS_Server | grep "has address" | awk '{print $4}')
+    DNS_IP=$(host ${DNS_RECORD} $DNS_SERVER | grep "has address" | awk '{print $4}')
 
-    echo DNS: ${DNS_IP} >> /tmp/${DNS_RECORDS}
-    echo current: ${ip} >> /tmp/${DNS_RECORDS}
+    echo DNS: ${DNS_IP} >> /tmp/${DNS_RECORD}
+    echo current: ${ip} >> /tmp/${DNS_RECORD}
     if [ "${DNS_IP}" != "${ip}" ]; then
-      echo DDNS-Status: need update >> /tmp/${DNS_RECORDS}
+      echo DDNS-Status: need update >> /tmp/${DNS_RECORD}
       echo "DDNS-Status: need update (DNS=${DNS_IP}, IP=${ip})"
       logger -t "ddnsupdate" "need update. (DNS=${DNS_IP}, IP=${ip})"
       #some preupdate commands?
       ${PRE_UPDATE_CMD}
       #creating /usr/bin/nsupdate commands
       commands="server ${DNS_SERVER}\nzone ${DNS_ZONE}\n"
-      for i in ${DNS_RECORDS}; do
+      for i in ${DNS_RECORD}; do
   #      commands="$commands\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\n"
          commands="${commands}\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\nupdate delete ${i} txt\nupdate add ${i} $DNS_TTL TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
       done
@@ -259,19 +256,19 @@ function dns_update_check {
       nsupdate_status=${?}
      #checking nsupdate exit status
       if [ ${nsupdate_status} -ne 0 ]; then
-        echo "DNS update failed! Wrong configuration?" >> /tmp/${DNS_RECORDS}
+        echo "DNS update failed! Wrong configuration?" >> /tmp/${DNS_RECORD}
         echo "DNS update failed! Wrong configuration?"
         logger -t "ddnsupdate" "DNS update failed! Wrong configuration?"
 #        exit 1
       else
-        logger -t "ddnsupdate" "${DNS_RECORDS} updated to ${ip}."
-        echo ${DNS_RECORDS} updated to ${ip} >> /tmp/${DNS_RECORDS}
-        echo "${DNS_RECORDS} updated to ${ip}"
+        logger -t "ddnsupdate" "${DNS_RECORD} updated to ${ip}."
+        echo ${DNS_RECORD} updated to ${ip} >> /tmp/${DNS_RECORD}
+        echo "${DNS_RECORD} updated to ${ip}"
         #writing our ip to state file
         echo "${ip}">$STATE_FILE
       fi
     else
-      echo DDNS-Status: update not neccessary >> /tmp/${DNS_RECORDS}
+      echo DDNS-Status: update not neccessary >> /tmp/${DNS_RECORD}
       echo "DDNS-Status: update not neccessary (DNS=${DNS_IP}, IP=${ip})"
       logger -t "ddnsupdate" "update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
       echo "${ip}">${STATE_FILE}
@@ -290,9 +287,15 @@ main() {
     fi
   done
 
+  if [ -z "$5" ] ; then
+    echo "Usage: $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
+    echo "For Update: $0 -u"
+    exit 1
+  fi
+
   check_nsupdate
   get_public_ip ${IP_DETECT_URL}
-  get_a_record ${DNS_RECORDS} ${DNS_Server}
+  get_a_record ${DNS_RECORD} ${DNS_SERVER}
   dns_update_check
 }
 
