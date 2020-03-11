@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20200311.03
+Version=20200311.04
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -171,31 +171,12 @@ function check_nsupdate {
   fi
 }
 
-
 debug() {
   if [ "$debug" = "1" ]; then
     echo
     echo -e "${YELLOW}\$ $@${NC}"
   fi
 }
-
-function get_public_ip {
-  #######################################
-  # Get public ip from a website
-  # Arguments:
-  #   url to use for detection
-  # Returns:
-  #   None
-  #######################################
-
-  ip=`curl -4 -s -f ${1} | grep -o "[[:digit:].]\+"`
-  debug "curl -4 -s -f ${1} | grep -o \"[[:digit:].]\+\""
-
-  echo Public IP: \ \ ${ip}
-  # remove stat file when older then 10 minutes
-  find /tmp/ -type f -name custom_ddns_last_ip -mmin "${MTIME}" -exec rm {} \;
-}
-
 
 function dns_update_check {
   #######################################
@@ -207,11 +188,8 @@ function dns_update_check {
   #   None
   #######################################
 
-  if [ -z "${ip}" ]; then
-    echo "Can't get the public IP, no Internet connection?"
-    logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
-    exit 1
-  fi
+  # remove stat file when older than ${MTIME}
+  find /tmp/ -type f -name custom_ddns_last_ip -mmin "${MTIME}" -exec rm {} \;
 
   if [ ! -f ${STATE_FILE} ]; then
     echo State file: \ Does not exist. Checking DNS.
@@ -222,6 +200,17 @@ function dns_update_check {
     STAT_FILE_AGE=`stat -c %Z ${STATE_FILE}`; NOW=`date +%s`; (( DIFF = (NOW - STAT_FILE_AGE) )); STAT_FILE_AGE="$[600-$DIFF]";
     echo "State file:  To early for doublecheck (${STAT_FILE_AGE} sec. remaining)".
     logger -t "ddnsupdate" "To early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
+    exit 1
+  fi
+
+  ip=`curl -4 -s -f ${3} | grep -o "[[:digit:].]\+"`
+  debug "curl -4 -s -f ${3} | grep -o \"[[:digit:].]\+\""
+
+  echo Public IP: \ \ ${ip}
+  
+  if [ -z "${ip}" ]; then
+    echo "Can't get the public IP, no Internet connection?"
+    logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
     exit 1
   fi
 
@@ -291,19 +280,17 @@ main() {
   done
 
   if [ -z "$5" ] ; then
-    echo "Usage: $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
-    echo "For Update: $0 -u"
+    echo "Usage:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
+    echo "Debug:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip} -v"
+    echo "Update: $0 -u"
     exit 1
   fi
 
   debug "Run function check_nsupdate()"
   check_nsupdate
 
-  debug "Run function get_public_ip(${IP_DETECT_URL} ${DNS_RECORD} ${DNS_SERVER})"
-  get_public_ip ${IP_DETECT_URL}
-
-  debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER})"
-  dns_update_check ${DNS_RECORD} ${DNS_SERVER}
+  debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL})"
+  dns_update_check ${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL}
 }
 
 main "$@"
