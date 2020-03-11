@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20200311.02
+Version=20200311.03
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -191,47 +191,21 @@ function get_public_ip {
   ip=`curl -4 -s -f ${1} | grep -o "[[:digit:].]\+"`
   debug "curl -4 -s -f ${1} | grep -o \"[[:digit:].]\+\""
 
-  echo Current IP: \ ${ip}
+  echo Public IP: \ \ ${ip}
   # remove stat file when older then 10 minutes
   find /tmp/ -type f -name custom_ddns_last_ip -mmin "${MTIME}" -exec rm {} \;
 }
 
 
-function get_a_record {
-  #######################################
-  # Get a record
-  # Arguments:
-  #   fqdn to check
-  #   dns server to user for query
-  # Returns:
-  #   None
-  #######################################
-
-  echo A-Record:\ \ \ \ $1
-
-  debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
-
-  if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
-    echo DNS IP:\ \ \ \ \ \ Not present. Forcing update!
-    logger -t "ddnsupdate" "A record $1 not found. Forcing update!"
-    UPDATE=1
-  else
-      echo DNS IP:\ \ \ \ \ \ ${DNS_IP}
-  fi
-}
-
 function dns_update_check {
   #######################################
   # Get public ip from a website
   # Arguments:
-  #   url to use for detection
+  #   1. DNS_RECORD to set
+  #   2. DNS_SERVER to be used
   # Returns:
   #   None
   #######################################
-
-  if [ "${DNS_IP}" != "{ip}" ]; then
-    UPDATE=1
-  fi
 
   if [ -z "${ip}" ]; then
     echo "Can't get the public IP, no Internet connection?"
@@ -240,19 +214,30 @@ function dns_update_check {
   fi
 
   if [ ! -f ${STATE_FILE} ]; then
-    echo State file: \ does not exist, check dns
-    logger -t "ddnsupdate" "state file does not exist, check dns."
+    echo State file: \ Does not exist. Checking DNS.
+    logger -t "ddnsupdate" "State file does not exist. Checking DNS."
     UPDATE=1
   else
     debug "600 - (stat -c %Z ${STATE_FILE}) - (date +%s)"
     STAT_FILE_AGE=`stat -c %Z ${STATE_FILE}`; NOW=`date +%s`; (( DIFF = (NOW - STAT_FILE_AGE) )); STAT_FILE_AGE="$[600-$DIFF]";
     echo "State file:  To early for doublecheck (${STAT_FILE_AGE} sec. remaining)".
     logger -t "ddnsupdate" "To early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
-#    exit 1
+    exit 1
   fi
 
   if [ "${UPDATE}" == "1" ]; then
-#    DNS_IP=$(host ${DNS_RECORD} $DNS_SERVER | grep "has address" | awk '{print $4}')
+    echo A-Record:\ \ \ \ ${1}
+
+    debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
+
+    if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
+      echo DNS IP:\ \ \ \ \ \ Not present. Forcing update!
+      logger -t "ddnsupdate" "A record $2 not found. Forcing update!"
+      UPDATE=1
+    else
+        echo DNS IP:\ \ \ \ \ \ ${DNS_IP}
+    fi
+
 
     if [ "${DNS_IP}" != "${ip}" ]; then
       echo "DDNS-Status: Need update (DNS=${DNS_IP}, IP=${ip})"
@@ -284,10 +269,10 @@ function dns_update_check {
         echo "${ip}">$STATE_FILE
       fi
     else
-      echo "DDNS-Status: update not neccessary (DNS=${DNS_IP}, IP=${ip})"
-      logger -t "ddnsupdate" "update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
+      echo "DDNS-Status: Update not neccessary (DNS=${DNS_IP}, IP=${ip})"
+      logger -t "ddnsupdate" "Update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
       echo "${ip}">${STATE_FILE}
-#      exit 1
+      exit 1
     fi
   else
    exit
@@ -311,10 +296,14 @@ main() {
     exit 1
   fi
 
+  debug "Run function check_nsupdate()"
   check_nsupdate
+
+  debug "Run function get_public_ip(${IP_DETECT_URL} ${DNS_RECORD} ${DNS_SERVER})"
   get_public_ip ${IP_DETECT_URL}
-  get_a_record ${DNS_RECORD} ${DNS_SERVER}
-  dns_update_check
+
+  debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER})"
+  dns_update_check ${DNS_RECORD} ${DNS_SERVER}
 }
 
 main "$@"
