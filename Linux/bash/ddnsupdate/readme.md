@@ -71,10 +71,10 @@ On the client side the key is exactly the same as on the server side:
     };
 
 # mechanism to check of an dns update is required
-1. Client checks if '${STATE_FILE}' exists.
+1. Client checks if *${STATE_FILE}* exists.
 - **Yes:** Wait until the file becomes older than '${MTIME}' before performing next cross check between public ip and a record
 - **No:**  Script runs for the first time or a reboot occured. Go ahead.
-2. Client queries '${IP_DETECT_URL}' to get public IP
-3. Client queries '${DNS_SERVER}' for the host record '${DNS_RECORD}' in the zone '${DNS_ZONE}'
-- **Public IP =  Host Record:** No update required. '${STATE_FILE}' is created. 
+2. Client queries *${IP_DETECT_URL}* to get public IP
+3. Client queries *${DNS_SERVER}* for the host record *${DNS_RECORD}* in the zone *${DNS_ZONE}*
+- **Public IP =  Host Record:** No update required. *${STATE_FILE}* is created. 
 - **Public IP != Host Record:** Execute nsupdate to update host record to public ip
