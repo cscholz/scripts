@@ -52,7 +52,7 @@ To allow key based updates to a specific dns zone the zone need to know the key 
             allow-update { key "ddns.domain.tld."; };
     };
 
-They key itself have also be to be set:
+They key itself have also to be set:
 
     key "ddns.domain.tld." {
       algorithm HMAC_SHA512;
