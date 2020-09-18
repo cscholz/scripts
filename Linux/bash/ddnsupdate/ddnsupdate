@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20200311.05
+Version=2020919.01
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -13,7 +13,6 @@ Version=20200311.05
 # ${DNS_SERVER}:     dns server to query and use for nsupdate
 # ${DNS_KEY_FILE}:   key file to authenticate for with write permissions
 # ${DNS_TTL}:        max dns ttl to write
-# ${STATE_FILE}:     file to write stat file (ip)
 # ${IP_DETECT_URL}:  URL must send public ip in plaintext
 # ${PRE_UPDATE_CMD}: any command to run before the update command
 # ${MTIME}:          mtime used for search command
@@ -32,11 +31,10 @@ DNS_ZONE="${2}"
 DNS_SERVER="${3}"
 DNS_KEY_FILE="${4}"
 DNS_TTL="60"
-STATE_FILE="/tmp/custom_ddns_last_ip"
 IP_DETECT_URL="${5}"
 PRE_UPDATE_CMD=""
 UPDATE=0
-MTIME=+10
+MTIME=+1
 
 RED='\033[0;31m'
 NC='\033[0m' # No Color
@@ -188,83 +186,62 @@ function dns_update_check {
   #   None
   #######################################
 
-  # remove stat file when older than ${MTIME}
-  find /tmp/ -type f -name custom_ddns_last_ip -mmin "${MTIME}" -exec rm {} \;
-
-  if [ ! -f ${STATE_FILE} ]; then
-    echo State file: \ Does not exist. Checking DNS.
-    logger -t "ddnsupdate" "State file does not exist. Checking DNS."
-    UPDATE=1
-  else
-    debug "600 - (stat -c %Z ${STATE_FILE}) - (date +%s)"
-    STAT_FILE_AGE=`stat -c %Z ${STATE_FILE}`; NOW=`date +%s`; (( DIFF = (NOW - STAT_FILE_AGE) )); STAT_FILE_AGE="$[600-$DIFF]";
-    echo "State file:  To early for doublecheck (${STAT_FILE_AGE} sec. remaining)".
-    logger -t "ddnsupdate" "To early for doublecheck (${STAT_FILE_AGE} sec. remaining)"
-    exit 1
-  fi
-
   ip=`curl -4 -s -f ${3} | grep -o "[[:digit:].]\+"`
   debug "curl -4 -s -f ${3} | grep -o \"[[:digit:].]\+\""
 
   echo Public IP: \ \ ${ip}
-  
+
   if [ -z "${ip}" ]; then
     echo "Can't get the public IP, no Internet connection?"
     logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
     exit 1
   fi
 
-  if [ "${UPDATE}" == "1" ]; then
-    echo A-Record:\ \ \ \ ${1}
+  echo A-Record:\ \ \ \ ${1}
 
-    debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
+  debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
 
-    if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
-      echo DNS IP:\ \ \ \ \ \ Not present. Forcing update!
-      logger -t "ddnsupdate" "A record $2 not found. Forcing update!"
-      UPDATE=1
+  if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
+    echo DNS IP:\ \ \ \ \ \ Not present. Forcing update!
+    logger -t "ddnsupdate" "A record $2 not found. Forcing update!"
+    UPDATE=1
+  else
+      echo DNS IP:\ \ \ \ \ \ ${DNS_IP}
+  fi
+
+
+  if [ "${DNS_IP}" != "${ip}" ]; then
+    echo "DDNS-Status: Need update (DNS=${DNS_IP}, IP=${ip})"
+    logger -t "ddnsupdate" "Need update. (DNS=${DNS_IP}, IP=${ip})"
+    #some preupdate commands?
+    ${PRE_UPDATE_CMD}
+    #creating /usr/bin/nsupdate commands
+    commands="server ${DNS_SERVER}\nzone ${DNS_ZONE}\n"
+    for i in ${DNS_RECORD}; do
+#      commands="$commands\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\n"
+       commands="${commands}\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\nupdate delete ${i} txt\nupdate add ${i} $DNS_TTL TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
+    done
+
+   debug "${commands} | /usr/bin/nsupdate -k ${DNS_KEY_FILE}"
+    commands="${commands}\nsend\n"
+    #running dns update
+    echo -e "${commands}" | /usr/bin/nsupdate -k ${DNS_KEY_FILE}
+
+    nsupdate_status=${?}
+   #checking nsupdate exit status
+    if [ ${nsupdate_status} -ne 0 ]; then
+      echo "DNS update failed! Wrong configuration?"
+      logger -t "ddnsupdate" "DNS update failed! Wrong configuration?"
+#      exit 1
     else
-        echo DNS IP:\ \ \ \ \ \ ${DNS_IP}
-    fi
-
-
-    if [ "${DNS_IP}" != "${ip}" ]; then
-      echo "DDNS-Status: Need update (DNS=${DNS_IP}, IP=${ip})"
-      logger -t "ddnsupdate" "Need update. (DNS=${DNS_IP}, IP=${ip})"
-      #some preupdate commands?
-      ${PRE_UPDATE_CMD}
-      #creating /usr/bin/nsupdate commands
-      commands="server ${DNS_SERVER}\nzone ${DNS_ZONE}\n"
-      for i in ${DNS_RECORD}; do
-  #      commands="$commands\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\n"
-         commands="${commands}\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\nupdate delete ${i} txt\nupdate add ${i} $DNS_TTL TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
-      done
-
-     debug "${commands} | /usr/bin/nsupdate -k ${DNS_KEY_FILE}"
-      commands="${commands}\nsend\n"
-      #running dns update
-      echo -e "${commands}" | /usr/bin/nsupdate -k ${DNS_KEY_FILE}
-
-      nsupdate_status=${?}
-     #checking nsupdate exit status
-      if [ ${nsupdate_status} -ne 0 ]; then
-        echo "DNS update failed! Wrong configuration?"
-        logger -t "ddnsupdate" "DNS update failed! Wrong configuration?"
-#        exit 1
-      else
-        logger -t "ddnsupdate" "${DNS_RECORD} updated to ${ip}."
-        echo Action:\ \ \ \ \ \ Updated to ${ip}
-        #writing our ip to state file
-        echo "${ip}">$STATE_FILE
-      fi
-    else
-      echo "DDNS-Status: Update not neccessary (DNS=${DNS_IP}, IP=${ip})"
-      logger -t "ddnsupdate" "Update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
-      echo "${ip}">${STATE_FILE}
-      exit 1
+      logger -t "ddnsupdate" "${DNS_RECORD} updated to ${ip}."
+      echo Action:\ \ \ \ \ \ Updated to ${ip}
+      #writing our ip to state file
     fi
   else
-   exit
+    echo "DDNS-Status: Update not neccessary (DNS=${DNS_IP}, IP=${ip})"
+    logger -t "ddnsupdate" "Update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
+    exit 1
   fi
 }
 
