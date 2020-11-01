@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20201018.01
+Version=20201101.01
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -368,6 +368,15 @@ function dnsbl_precheck() {
       if [ -z "$DomainCheck" ]; then
         DomainCheck=${DomainArray[$ArrayNo-2]}"."${DomainArray[$ArrayNo-1]}
         let ArrayNo-=2
+
+        # Check full domain
+        match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+        if [ ! -z "$match" ]; then
+          return "1"
+        fi
+
+        # Check tld of domain
+        DomainCheck=${DomainArray[$ArrayNo-1]}
         match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
         if [ ! -z "$match" ]; then
           return "1"
