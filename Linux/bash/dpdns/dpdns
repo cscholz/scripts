@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20201101.02
+Version=20201101.03
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -128,7 +128,7 @@ function dnsbl_upload() {
 
   if [[ "${2}" == "dnsmasq" ]]; then
     echo -n "> Preparing file..."
-    sed -r 's/(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/127\.0\.0\.1/g' -i -i "${upload_file}"
+    sed -r 's/(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/0\.0\.0\.0/g' -i -i "${upload_file}"
     echo Done
   fi
 
