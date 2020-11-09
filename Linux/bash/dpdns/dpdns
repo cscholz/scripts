@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20201101.03
+Version=20201109.01
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
