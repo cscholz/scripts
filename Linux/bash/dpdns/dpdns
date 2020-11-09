@@ -214,6 +214,7 @@ function dnsbl_convert_to_dnsmasq {
   #######################################
 
   if [[ -n "${2}" ]] ; then
+  > "${2}"
     if [[ ! -d "$(dirname ${2})" ]]; then
       echo "Folder ${2} does not exist. Creating..."
       mkdir -p "$(dirname ${2})"
@@ -319,6 +320,7 @@ function dnsbl_convert_to_bind {
   #######################################
 
   if [[ -n "${2}" ]] ; then
+    > "${2}"
     if [[ -f "${1}" ]]; then
       echo Converting dnsmasq file to bind file format:
 
@@ -345,6 +347,7 @@ function dnsbl_convert_to_bind {
   else
     echo "Usage: ${0} {dnsmasq-source-file} {bind-target-file}"
   fi
+  echo
 }
 
 function dnsbl_precheck() {
@@ -353,48 +356,78 @@ function dnsbl_precheck() {
   #   $1 domain to check if already listed
   #   $2 blacklist file
   # Returns:
+  #   0: domain is not listed
   #   1: domain is already listed
-  #   2: domain is not listed
+  #   domain_match: domain part that is already blacklisted
   #######################################
   if [ -n "$2" ] ; then
     unset DomainCheck
+    unset Seperator
     dnsfile=$2
     Domain=$1
     DomainArray=(${Domain//./ })
     ArrayNo=${#DomainArray[@]}
 
-    while [  "${ArrayNo}" -gt 0 ]; do
+#   echo $ArrayNo
+#   echo ${DomainArray[@]}
+#   echo "---"
+
+  # Loop reverse trough array (test.domain.com = com; domain.com; test.domain.com)
+  echo -ne "Checking $Domain \r"
+  while [  "${ArrayNo}" -gt 0 ]; do
+    #echo $ArrayNo
+    let ArrayNo-=1
+    DomainCheck=${DomainArray[$ArrayNo]}$Seperator$DomainCheck
+#   echo -ne "Checking $DomainCheck \r"
+    Seperator="."
+    match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+#    echo $match
+    if [ ! -z "$match" ]; then
+      echo
+      return 1
+    fi
     unset match
-      if [ -z "$DomainCheck" ]; then
-        DomainCheck=${DomainArray[$ArrayNo-2]}"."${DomainArray[$ArrayNo-1]}
-        let ArrayNo-=2
+  done
 
-        # Check full domain
-        match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
-        if [ ! -z "$match" ]; then
-          return "1"
-        fi
+  echo
+  return 0
 
-        # Check tld of domain
-        DomainCheck=${DomainArray[$ArrayNo-1]}
-        match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
-        if [ ! -z "$match" ]; then
-          return "1"
-        fi
-        else
-          let ArrayNo-=1
-          DomainCheck=${DomainArray[$ArrayNo]}"."$DomainCheck
-          match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
-          if [ ! -z "$match" ]; then
-            return "1"
-            break
-          fi
-        fi
-    done
-    return "0"
-  else
-    return "0"
   fi
+#    while [  "${ArrayNo}" -gt -1 ]; do
+#    unset match
+#
+#      if [ -z "$DomainCheck" ]; then
+#        DomainCheck=${DomainArray[$ArrayNo-2]}"."${DomainArray[$ArrayNo-1]}
+#echo $DomainCheck
+#        let ArrayNo-=1
+#
+#        # Check tld of domain
+#        DomainCheck=${DomainArray[$ArrayNo-1]}
+#        match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+#        if [ ! -z "$match" ]; then
+#          return "1"
+#        fi
+#
+#        # Check full domain
+#        match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+#        if [ ! -z "$match" ]; then
+#          return "1"
+#        fi
+#
+#        else
+#          let ArrayNo-=1
+#          DomainCheck=${DomainArray[$ArrayNo]}"."$DomainCheck
+#          match=$(egrep "[\"|/]$DomainCheck[\"|/]" "${dnsfile}")
+#          if [ ! -z "$match" ]; then
+#            return "1"
+#            break
+#          fi
+#        fi
+#    done
+#    return "0"
+#  else
+#    return "0"
+#  fi
 }
 
 
@@ -442,7 +475,9 @@ function dnsbl_add_record() {
       echo "address=/$domain/${eth0_ip}" >>  "${blacklist_file}"
     fi
   else
-    echo "$domain or parent already blacklisted in [${blacklist_file}]"
+#   echo "$domain or parent already blacklisted in [${blacklist_file}]"
+    echo "$DomainCheck already blackisted in [${blacklist_file}]"
+    exit
   fi
 }
 
