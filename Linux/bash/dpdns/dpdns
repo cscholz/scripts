@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20201109.01
+Version=20201114.01
 # dpdns: data-privacy-dns
 # Script manages a DNS blacklist for dnsmasq or debian. It allows to download
 # or upload an existing dnsbl. It can convert between bind9 and dnsmasq file
@@ -26,6 +26,19 @@ function log {
   logger -t "updateDNSBL" "${1}"
 }
 
+
+function tempfile() {
+  #######################################
+  # returns path to a unique temp file
+  # Arguments:
+  #   None
+  # Returns:
+  #   url to temp file located in /tmp
+  #######################################
+
+  tempprefix=$(basename "$0")
+  mktemp /tmp/${tempprefix}-$$.XXXXXX
+}
 
 function dnsbl_update_check() {
   #######################################
@@ -64,13 +77,16 @@ function dnsbl_update_check() {
     then
         log "New Version of DNSBL"
         echo "--------------------"
+        local blacklist_temp
+        blacklist_temp=$(tempfile)
         log "> Downloading new version"
-        cd /tmp/ || exit
-        wget -q -O blacklist ${web_url}
+#        cd /tmp/ || exit
+        wget -q -O ${blacklist_temp} ${web_url}
         log "> Update DNSBL (${local_version} > ${web_version})"
         [[ -e $(which open) ]] && open
 #       [[ -e "${local_path}" ]] && cp ${local_path} ${local_path}.1
-        cat /tmp/blacklist > ${local_path}
+#        cat /tmp/blacklist > ${local_path}
+        cat  ${blacklist_temp} > ${local_path}
 
                 if [[ "${3}" == "dnsmasq" ]]; then
 #                 sed "s/127.0.0.1/$(ifconfig eth0 | egrep -o '([1-2]?[0-9]{0,2}\.){3,3}[1-2]?[0-9]{0,2}' | head -1)/g" -i $local_path
@@ -79,8 +95,9 @@ function dnsbl_update_check() {
 
         [[ -e $(which close) ]] && close
 
-       log "> Restart DNS Service (${3})"
+        log "> Restart DNS Service (${3})"
         ${service_restart_cmd}
+        rm ${blacklist_temp}
     else
         log "DNSBL is up to date (${local_version}=>${web_version})"
     fi;
@@ -685,11 +702,11 @@ main() {
     7)   dnsbl_raise_version ${MasqLocal};;
     8)   dnsbl_convert_to_bind ${MasqLocal} ${BindLocal};;
     9)   upload_domain_blacklist domains-blacklist.txt;;
-    add) test -f "/etc/bind/blacklist.bind" && dnsbl_add_record "${2}" "/etc/bind/blacklist.bind" bind9 "${3}"
-         test -f "/etc/dnsmasq.d/blacklist.dnsmasq" && dnsbl_add_record "${2}" "/etc/dnsmasq.d/blacklist.dnsmasq" dnsmasq "${3}"
+    add) test -f ${BindLocal} && dnsbl_add_record "${2}" ${BindLocal} bind9 "${3}"
+         test -f ${MasqLocal} && dnsbl_add_record "${2}" ${MasqLocal} dnsmasq "${3}"
          ;;
-    rm)  test -f "/etc/bind/blacklist.bind" && dnsbl_rm_record "${2}" "/etc/bind/blacklist.bind"
-         test -f "/etc/dnsmasq.d/blacklist.dnsmasq" && dnsbl_rm_record "${2}" "/etc/dnsmasq.d/blacklist.dnsmasq"
+    rm)  test -f ${BindLocal} && dnsbl_rm_record "${2}" ${BindLocal}
+         test -f ${MasqLocal} && dnsbl_rm_record "${2}" ${MasqLocal}
          ;;
     ld)  curl -s $BindWeb | sed '/^\//d' |awk '{print $2}' |sed 's/"//g';;
     u)   check_self_update;;
