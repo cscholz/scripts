@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=2020919.01
+Version=2020112001
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -202,13 +202,17 @@ function dns_update_check {
   debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
 
   if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
+    if [ "${DNS_IP}" = "" ]; then
+      echo DNS IP:\ \ \ \ \ \ FAILURE. Can not get ip. Aborting.
+      exit
+    fi
+
     echo DNS IP:\ \ \ \ \ \ Not present. Forcing update!
     logger -t "ddnsupdate" "A record $2 not found. Forcing update!"
     UPDATE=1
   else
       echo DNS IP:\ \ \ \ \ \ ${DNS_IP}
   fi
-
 
   if [ "${DNS_IP}" != "${ip}" ]; then
     echo "DDNS-Status: Need update (DNS=${DNS_IP}, IP=${ip})"
