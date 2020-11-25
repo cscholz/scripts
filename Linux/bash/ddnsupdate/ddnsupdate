@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=2020112001
+Version=20201125.01
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -64,7 +64,8 @@ run_self_update() {
   if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
     echo "Failed: Error while trying to wget new version!"
     echo "File requested: ${update_base}/${self}"
-    exit 1
+#    exit 1
+
   fi
   echo "Done."
 
@@ -73,7 +74,7 @@ run_self_update() {
   if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
     echo "Failed: Error while trying to wget md5sum!"
     echo "File requested: ${update_base}${self}.md5"
-    exit 1
+#    exit 1
   fi
   echo "Done."
 
@@ -85,7 +86,7 @@ run_self_update() {
     echo "Failed. Abort!"
     echo "${web_md5} / ${local_md5}"
     rm "${0}.md5"
-    exit 0
+#    exit 0
   fi
   echo "Ok"
   rm "${0}.md5"
@@ -94,7 +95,7 @@ run_self_update() {
   OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
   if ! chmod ${OCTAL_MODE} "${0}.tmp" ; then
     echo "Failed: Error while trying to set mode on ${0}.tmp."
-    exit 1
+#    exit 1
   fi
 
   # Spawn update script
@@ -184,35 +185,42 @@ function dns_update_check {
   #   2. DNS_SERVER to be used
   # Returns:
   #   None
+  # Global:
+  # Set default to ipv4. Changed by -4 or -6 parameter
+  # IPvX: IPv4=4; IPv6=6
+  # AType A=IPv4; AAAA=IPv6
   #######################################
 
-  ip=`curl -4 -s -f ${3} | grep -o "[[:digit:].]\+"`
-  debug "curl -4 -s -f ${3} | grep -o \"[[:digit:].]\+\""
+# only ipv4 check
+#  ip=`curl -${IPvX} -s -f ${3} | grep -o "[[:digit:].]\+"`
+#  debug "curl -${IPvX} -s -f ${3} | grep -o \"[[:digit:].]\+\""
 
-  echo Public IP: \ \ ${ip}
+# added ipv6 check
+  ip=`curl -${IPvX} -s -f ${3}`
+  debug "curl -${IPvX} -s -f ${3}"
+
+  echo Public IPv${IPvX}:\ ${ip}
 
   if [ -z "${ip}" ]; then
     echo "Can't get the public IP, no Internet connection?"
     logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
-    exit 1
+#    exit 1
   fi
 
-  echo A-Record:\ \ \ \ ${1}
+  echo Hostname: \ \ \ ${1}
 
-  debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
+#  debug "host ${1} ${2} | grep \"has address\" | awk '{print $4}'"
+  debug "dig ${AType} ${1} @${2} +short"
 
-  if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
-    if [ "${DNS_IP}" = "" ]; then
-      echo DNS IP:\ \ \ \ \ \ FAILURE. Can not get ip. Aborting.
-      exit
-    fi
-
+#  if ! DNS_IP=$(host ${1} ${2} | grep "has address" | awk '{print $4}') >/dev/null 2>&1 ; then
+  if ! DNS_IP=$(dig ${AType} ${1} @${2} +short) >/dev/null 2>&1 ; then
     echo DNS IP:\ \ \ \ \ \ Not present. Forcing update!
-    logger -t "ddnsupdate" "A record $2 not found. Forcing update!"
+    logger -t "ddnsupdate" "${AType} record $2 not found. Forcing update!"
     UPDATE=1
   else
       echo DNS IP:\ \ \ \ \ \ ${DNS_IP}
   fi
+
 
   if [ "${DNS_IP}" != "${ip}" ]; then
     echo "DDNS-Status: Need update (DNS=${DNS_IP}, IP=${ip})"
@@ -222,8 +230,8 @@ function dns_update_check {
     #creating /usr/bin/nsupdate commands
     commands="server ${DNS_SERVER}\nzone ${DNS_ZONE}\n"
     for i in ${DNS_RECORD}; do
-#      commands="$commands\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\n"
-       commands="${commands}\nupdate delete ${i} A\nupdate add ${i} ${DNS_TTL} A ${ip}\nupdate delete ${i} txt\nupdate add ${i} $DNS_TTL TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
+#      commands="$commands\nupdate delete ${i} ${AType}\nupdate add ${i} ${DNS_TTL} ${AType} ${ip}\n"
+       commands="${commands}\nupdate delete ${i} ${AType}\nupdate add ${i} ${DNS_TTL} ${AType} ${ip}\nupdate delete ${i} txt\nupdate add ${i} $DNS_TTL TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
     done
 
    debug "${commands} | /usr/bin/nsupdate -k ${DNS_KEY_FILE}"
@@ -245,20 +253,15 @@ function dns_update_check {
   else
     echo "DDNS-Status: Update not neccessary (DNS=${DNS_IP}, IP=${ip})"
     logger -t "ddnsupdate" "Update not neccessary. (DNS=${DNS_IP}, IP=${ip})"
-    exit 1
+#    exit 1
   fi
 }
 
 main() {
-  for i in "$@" ; do
-    if [[ "${i}" == "-u" ]] ; then
-      check_self_update
-      exit 1
-    fi
-    if [[ "${i}" == "-v" ]] ; then
-      debug=1
-    fi
-  done
+
+# Default value
+IPvX="4"
+AType="A"
 
   if [ -z "$5" ] ; then
     echo "Usage:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
@@ -267,11 +270,37 @@ main() {
     exit 1
   fi
 
-  debug "Run function check_nsupdate()"
-  check_nsupdate
+  for i in "$@" ; do
+    if [[ "${i}" == "-u" ]] ; then
+      check_self_update
+      exit 1
+    fi
+    if [[ "${i}" == "-v" ]] ; then
+      debug=1
+    fi
+    if [[ "${i}" == "-4" ]] ; then
+      IPvX="4"
+      AType="A"
 
-  debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL})"
-  dns_update_check ${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL}
+      debug "Run function check_nsupdate()"
+      check_nsupdate
+
+      debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL})"
+      dns_update_check ${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL}
+      echo
+    fi
+    if [[ "${i}" == "-6" ]] ; then
+      IPvX="6"
+      AType="AAAA"
+
+      debug "Run function check_nsupdate()"
+      check_nsupdate
+
+      debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL})"
+      dns_update_check ${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL}
+      echo
+    fi
+  done
 }
 
 main "$@"
