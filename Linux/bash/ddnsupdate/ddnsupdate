@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20201125.01
+Version=20201125.02
 
 # Description:
 # Script queried dns ip of given fqdn an compares these with the current public ip of the device.
@@ -19,7 +19,7 @@ Version=20201125.01
 #
 # Style-Guide: https://google.github.io/styleguide/shell.xml#Case_statement
 
-set -eo pipefail
+#set -eo pipefail
 # -e: exit immidiately when a command fails. If piped check only the last command error code.
 #     Use ||true for commands allowed to fail.
 # -u: treat unset variable as an error and exit immidiately
@@ -129,7 +129,7 @@ check_self_update() {
   local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/ddnsupdate/
 
   local myself_web_version
-  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
+  myself_web_version=$(curl --silent -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
   echo "Web:  " "${myself_web_version}"
   myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
   echo "Local:" "${myself_local_version}"
@@ -142,8 +142,8 @@ check_self_update() {
       run_self_update "${self}" "${update_base}"
     fi
   else
-          echo "No update available (v.${myself_local_version})"
-        fi
+    echo "No update available (v.${myself_local_version})"
+  fi
 }
 
 function check_nsupdate {
@@ -196,15 +196,18 @@ function dns_update_check {
 #  debug "curl -${IPvX} -s -f ${3} | grep -o \"[[:digit:].]\+\""
 
 # added ipv6 check
-  ip=`curl -${IPvX} -s -f ${3}`
-  debug "curl -${IPvX} -s -f ${3}"
+  debug "curl --connect-timeout 2 -${IPvX} --silent -f ${3}"
+  ip=$(curl --connect-timeout 2 -${IPvX} --silent -f ${3})
+#  debug "wget --timeout=1 --waitretry=0 --tries=4 -qO- -${IPvX} ${3}"
+#  ip=$(wget --timeout=1 --waitretry=0 --tries=4 -qO- -${IPvX} ${3})
 
   echo Public IPv${IPvX}:\ ${ip}
 
   if [ -z "${ip}" ]; then
+# if [ $? -ne "0" ]; then
     echo "Can't get the public IP, no Internet connection?"
     logger -t "ddnsupdate" "Can't get the public IP, no Internet connection"
-#    exit 1
+    return 1
   fi
 
   echo Hostname: \ \ \ ${1}
@@ -258,26 +261,23 @@ function dns_update_check {
 }
 
 main() {
-
-# Default value
-IPvX="4"
-AType="A"
-
-  if [ -z "$5" ] ; then
-    echo "Usage:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip}"
-    echo "Debug:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip} -v"
-    echo "Update: $0 -u"
-    exit 1
-  fi
-
   for i in "$@" ; do
     if [[ "${i}" == "-u" ]] ; then
       check_self_update
       exit 1
     fi
+
+    if [ -z "$5" ] ; then
+      echo "Usage:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip} {-4/-6}"
+      echo "Debug:  $0 {a-record} {dns-zone.tld} {dns-server} {/path/to/dns.key} {http://ifconfig.me/ip} -v "
+      echo "Update: $0 -u"
+      exit 1
+    fi
+
     if [[ "${i}" == "-v" ]] ; then
       debug=1
     fi
+
     if [[ "${i}" == "-4" ]] ; then
       IPvX="4"
       AType="A"
@@ -289,6 +289,7 @@ AType="A"
       dns_update_check ${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL}
       echo
     fi
+
     if [[ "${i}" == "-6" ]] ; then
       IPvX="6"
       AType="AAAA"
@@ -301,6 +302,18 @@ AType="A"
       echo
     fi
   done
+
+  # neither ipv4 or ipv6 specified
+  if [ -z "${IPvX}" ]; then
+    IPvX="4"
+    AType="A"
+
+    debug "Run function check_nsupdate()"
+    check_nsupdate
+
+    debug "Run function dns_update_check(${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL})"
+    dns_update_check ${DNS_RECORD} ${DNS_SERVER} ${IP_DETECT_URL}
+  fi
 }
 
 main "$@"
