@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20191109.01
+Version=20211001.01
 
 # Description: Script check if the TLSA record for the active certificate matches the DNS published one.
 
@@ -155,11 +155,11 @@ main() {
        echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
        exit 1
     fi
-    
+
     if [[ "${i}" == "-u" ]] ; then
       check_self_update
       exit 1
-    fi    
+    fi
   done
 
   for i in "${@:2}"; do
@@ -169,12 +169,17 @@ main() {
       echo "No A record found for ${i}"
       exit 2
     else
-      if [ "${1}" -eq "25" ]; then
+      if [ "${1}" -eq "25" ] || [ "${1}" -eq "465" ] || [ "${1}" -eq "587" ]; then
         domain="$(dig @"${public_dns}" "${i}" MX +short | awk '{print $2}')"
+        if [ -z ${domain} ]; then
+          echo "$(color "No mx found for ${2}!!" red)"
+        else
+          echo "Using mx record: $(color "${domain}" yellow)"
+        fi
       else
         domain="${i}"
       fi
-    
+
       port="${1}"
 
       echo ""
@@ -193,10 +198,10 @@ main() {
         echo >> "${temp}"
         echo "Required TLSA Records:" >> "${temp}"
         echo "---------------------------------------" >> "${temp}"
-  
+
         local smtp_parameter=""
-        if [ "${port}" -eq "25" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls smtp"; fi
-        if [ "${port}" -eq "21" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls ftp"; fi
+        if [ "${port}" -eq "25" ] || [ "${port}" -eq "465" ] || [ "${port}" -eq "587" ]; then smtp_parameter="-starttls smtp"; fi
+        if [ "${port}" -eq "21" ]; then smtp_parameter="-starttls ftp"; fi
         nohup openssl s_client -showcerts -verify 5 -connect ${domain}:${port} ${smtp_parameter} < /dev/null | awk '/BEGIN/,/END/{ if(/BEGIN/){a++}; out="'$temp'"a".pem"; print >out}'
 
         counter="0"
@@ -216,12 +221,12 @@ main() {
             echo "${tlsa_record}" >> $temp
           failed=1
           fi
-  
+
           counter=2
           echo
         done
         rm "${temp}"* > /dev/null
-  
+
         if [ "${failed}" -eq "1" ]; then mutt -s "[$i] - TLSA failed for Port $1" "${postmaster}" < $temp; fi
     fi
   done
