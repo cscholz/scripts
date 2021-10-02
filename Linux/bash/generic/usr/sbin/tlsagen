@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+Version=20211001.01
+
+# Source: https://community.letsencrypt.org/t/making-a-dane-tlsa-to-work-with-le/2129/7
+
+set -u
+# -e: exit immidiately when a command fails. If piped check only the last command error code.
+#     Use ||true for commands allowed to fail.
+# -u: treat unset variable as an error and exit immidiately
+# -o pipefail: same as -e but for all commands in a pipe.
+# -x: debug option
+
+run_self_update() {
+  #######################################
+  # Download a new copy of myself and replace myself with it
+  # Arguments:
+  #   $1 $0 (script name)
+  #   $2 update where the new version is stored
+  # Returns:
+  #   None
+  #######################################
+
+  self=${1}
+
+  # The base location from where to retrieve new versions of this script
+  update_base=${2}
+
+  echo "> Performing self-update..."
+
+  # Download new version
+  echo -n "> Downloading latest version..."
+  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
+    echo "Failed: Error while trying to wget new version!"
+    echo "File requested: ${update_base}/${self}"
+    exit 1
+  fi
+  echo "Done."
+
+  # Download MD5 of update
+  echo -n "> Downloading md5 sum..."
+  if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
+    echo "Failed: Error while trying to wget md5sum!"
+    echo "File requested: ${update_base}${self}.md5"
+    exit 1
+  fi
+  echo "Done."
+
+  # Checking MD5 sum
+  echo -n "> Checking MD5 sum..."
+  web_md5=$(cat "${0}".md5 | awk '{print $1}')
+  local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
+  if [[ $web_md5 != "${local_md5}" ]]; then
+    echo "Failed. Abort!"
+    echo "${web_md5} / ${local_md5}"
+    rm "${0}.md5"
+    exit 0
+  fi
+  echo "Ok"
+  rm "${0}.md5"
+
+  # Copy over modes from old version
+  OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
+  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
+    echo "Failed: Error while trying to set mode on ${0}.tmp."
+    exit 1
+  fi
+
+  # Spawn update script
+  cat > updateScript.sh << EOF
+#!/bin/bash
+# Overwrite old file with new
+if mv "${0}.tmp" "${0}"; then
+  echo "Done. Update complete."
+  rm \${0}
+else
+  echo "Failed. Please try again!"
+  rm \${0}
+fi
+EOF
+
+  echo -n "> Start update process..."
+  exec /bin/bash updateScript.sh
+}
+
+check_self_update() {
+  #######################################
+  # Check for a new version of myself
+  # Arguments:
+  #   $1 $0 (script name)
+  # Returns:
+  #   None
+  #######################################
+
+  self=$(basename "${0}")
+  # The base location from where to retrieve new versions of this script
+  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+
+  local myself_web_version
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
+  echo "Web:" "${myself_web_version}"
+  myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
+  echo "Local:" "${myself_local_version}"
+  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
+          read -p "Update (y/N) " -r
+    echo    # (optional) move to a new line
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+      run_self_update "${self}" "${update_base}"
+    fi
+  else
+          echo "No update available (v.${myself_local_version})"
+        fi
+}
+
+tempfile() {
+    tempprefix=$(basename "$0")
+    mktemp /tmp/${tempprefix}.XXXXXX
+}
+
+
+function color() {
+
+  if [ "${2}" == "green" ]; then
+#   echo -e "\033[40;1;32m"${1}"\033[0m"
+    echo -e "\e[32m"${1}"\e[39m"
+  fi
+
+  if [ "${2}" == "red" ]; then
+#   echo -e "\033[40;1;31m"${1}"\033[0m"
+    echo -e "\e[31m"${1}"\e[39m"
+  fi
+
+  if [ "${2}" == "yellow" ]; then
+#   echo -e "\033[40;1;33m"${1}"\033[0m"
+    echo -e "\e[33m"${1}"\e[39m"
+  fi
+}
+
+main() {
+  for i in "${@}" ; do
+    if [[ "${i}" == "-u" ]] ; then
+      check_self_update
+      exit 1
+    fi
+  done
+
+  extract() {
+    case "$4" in
+    0) openssl x509 -in "$1" -outform DER;;
+    1) openssl x509 -in "$1" -noout -pubkey | openssl pkey -pubin -outform DER;;
+    esac
+  }
+  digest() {
+    case "$5" in
+    0) cat;;
+    1) openssl dgst -sha256 -binary;;
+    2) openssl dgst -sha512 -binary;;
+    esac
+  }
+  encode() {
+    local cert=$1; shift
+    local hostport=$1; shift
+    local u=$1; shift
+    local s=$1; shift
+    local m=$1; shift
+    local host=$hostport
+    local port=25
+
+    OIFS="$IFS"; IFS=":"; set -- $hostport; IFS="$OIFS"
+    if [ $# -eq 2 ]; then host=$1; port=$2; fi
+
+    printf "_%d._tcp.%s. IN TLSA %d %d %d %s\n" \
+      "$port" "$host" "$u" "$s" "$m" \
+       "$(hexdump -ve '/1 "%02X"')"
+  }
+
+  genrr() {
+      rr=$(
+          extract "$@" | digest "$@" | encode "$@"
+          exit $(( ${PIPESTATUS[0]} | ${PIPESTATUS[1]} | ${PIPESTATUS[2]} ))
+      )
+      status=$?; if [ $status -ne 0 ]; then exit $status; fi
+      echo "$rr"
+  }
+
+  error() { echo "$1" 1>&2; exit 1; }
+  usage() { error "Usage: $0 chain.pem host[:port]"; }
+  if [ $# -ne 2 ]; then usage; fi
+
+  # Validate and normalize the chain
+  #
+  certfile=$1; shift
+  chain="$(
+      openssl crl2pkcs7 -nocrl -certfile "$certfile" |
+          openssl pkcs7 -print_certs
+      exit $(( ${PIPESTATUS[0]} | ${PIPESTATUS[1]} ))
+  )"
+  status=$?; if [ $status -ne 0 ]; then exit $status; fi
+
+  hostport=$1; shift
+  usage=3
+  cert=
+  printf "%s\n\n" "$chain" |
+  while read line
+  do
+      if [[ -z "$cert" && ! "$line" =~ ^-----BEGIN ]]; then
+          continue
+      fi
+      cert=$(printf "%s\n%s" "$cert" "$line")
+      if [ -z "$line" -a ! -z "$cert" ]; then
+          echo "$cert" |
+              openssl x509 -noout -subject -issuer -dates |
+              sed -e 's/^/;; /'
+          echo ";;"
+          genrr <(echo "$cert") "$hostport" $usage 0 1
+          genrr <(echo "$cert") "$hostport" $usage 1 1
+          genrr <(echo "$cert") "$hostport" $usage 0 2
+          genrr <(echo "$cert") "$hostport" $usage 1 2
+          echo
+          cert=""
+          usage=2
+      fi
+  done
+
+}
+
+main "$@"
