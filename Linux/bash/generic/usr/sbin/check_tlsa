@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-Version=20211001.01
-
+Version=20211219.01
 # Description: Script check if the TLSA record for the active certificate matches the DNS published one.
 
 if [ -z "${1}" ] ; then
@@ -225,9 +224,11 @@ main() {
           counter=2
           echo
         done
-        rm "${temp}"* > /dev/null
 
         if [ "${failed}" -eq "1" ]; then mutt -s "[$i] - TLSA failed for Port $1" "${postmaster}" < $temp; fi
+
+        rm "${temp}"* > /dev/null
+
     fi
   done
 }
