@@ -1,0 +1,80 @@
+#!/bin/bash
+Version=20221127.01
+
+for i in "$@" ; do
+  if [[ $i == "-V" ]] ; then
+     echo  $(basename "$0") $Version
+
+     echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
+     echo "Dieses Script ist unter GPL v.2. veröffentlicht"
+     echo
+     echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
+     exit 1
+  fi
+done
+
+function color() {
+
+        if [ "$2" == "green" ]; then
+                 echo -e "\e[32m$1\e[39m"
+        fi
+
+        if [ "$2" == "red" ]; then
+                 echo -e "\e[31m$1\e[39m"
+        fi
+        if [ "$2" == "yellow" ]; then
+                 echo -e "\e[33m$1\e[39m"
+        fi
+}
+
+RECIPIENT=root
+if [[ $1 = "" ]]; then
+    echo "incorrect usage; specify the procress name an the command line."
+    echo "$0 ps-name [service-name]"
+else
+    process_pid=$(ps -ef | grep "$1" | grep -E -v '(grep|/bin/tar)' | grep -v "$0" | cut -c 10-14)
+
+    if [[ $process_pid = "" ]]; then
+      if [ "$2" != "" ]; then
+#       echo "[$(hostname)] - Service [$1] is down."
+        echo "[$(hostname)] - Service [$1] is" "$(color "down" red)"
+        if [[ -n $(/usr/bin/systemctl cat -- "$2") ]]; then
+          echo -en "[$(hostname)] - Service [$1] restart attempt"
+          /usr/bin/systemctl restart "$2" | mail -s "[$(hostname)] - Service $1 down, restarting... (1/2)" $RECIPIENT > /dev/null
+          touch /tmp/"$2"
+        else
+#         echo -en "[$(hostname)] - Service [$1] failed (unit not found)"
+          echo -en "[$(hostname)] - Service [$1] restart" "$(color "failed" red)" "(unit not found)"
+          exit
+        fi
+        process_pid=$(ps -ef | grep -i "$1" | grep -E -v '(grep|/bin/tar)' | grep -v "$0" | cut -c 10-14)
+
+        if [[ ! $process_pid = "" ]]; then
+          echo " seems" "$(color "successfull" yellow)"
+              if [[ -f /tmp/$2 ]]; then
+                #ps aux | grep -i "$1" | egrep -v '(gre|/bin/tar|mail)' | grep -v "$0" | mail -s "[$(hostname)] - Service $1 recovered (2/2)" $RECIPIENT
+                systemctl status "$1" | mail -s "[$(hostname)] - Service $1 recovered (2/2)" $RECIPIENT
+                #mail -s "[$(hostname)] - Service $1 recovered (2/2)" $RECIPIENT < /dev/null
+                #echo "[$(hostname)] - Service [$1] is recovered."
+                echo "[$(hostname)] - Service [$1] is" "$(color "confirmed" green)" "recovered"
+                rm /tmp/"$2"
+              fi
+        else
+          color " failed" red
+          /usr/bin/systemctl start "$2" > /dev/null 2>&1
+          process_pid=$(ps -ef | grep -i "$1" | grep -E -v '(grep|/bin/tar)' | grep -v "$0" | cut -c 10-14)
+
+          if [[ $process_pid = "" ]]; then
+            echo "[$(hostname)] - Service [$1] is still down - sending notification"
+            mail $RECIPIENT -s "[$(hostname)] - Service $1 recovery failed! (2/2)" < /dev/null > /dev/null
+          else
+            color " (ok)" green
+#            echo "$1 seems to be running eith PID: $process_pid"
+            ps -ef | grep "$1" | grep -v grep | grep -v "$0" | mail -s "[$(hostname)] - Service $1 recovery successfull with PID: $process_pid" $RECIPIENT
+            exit 0
+          fi
+        fi
+
+      fi
+    fi
+fi
