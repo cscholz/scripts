@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-Version=20190607.01
+Version=20201127.01
 
 # Description:  Script could be referenzed from other scripts to check if a required package is installed.
 # It checks if a package is installed. If not it asks if it should be installed.
