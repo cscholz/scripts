@@ -1,8 +1,9 @@
 #!/bin/bash
-# Version=20240605.04
+# Version=20240605.05
 
 #set -euo pipefail
-trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
+#trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
+trap 'cleanup' EXIT INT TERM
 
 GLOBAL_CONFIG="/etc/borgbackup.conf"
 USER_CONFIG="$HOME/.config/borgbackup/borgbackup.conf"
@@ -418,6 +419,7 @@ repo_check_status() {
 
 cleanup() {
     log_step "> Cleaning up variables" "ok"
+    rm -f "$temp"
     unset BORG_PASSPHRASE BORG_RSH temp snapshot_name
 }
 
