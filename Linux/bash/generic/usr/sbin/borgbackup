@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20240605.03
+# Version=20240605.04
 
 #set -euo pipefail
 trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
@@ -83,8 +83,8 @@ help_functions=(
     "backup_compact"
     "backup_create [path]"
     "backup_delete [archive_name]"
-    "backup_list_and_mail"
     "backup_mount [archive_name]"
+    "backup_list_and_mail"
     "repo_change_passphrase"
     "repo_check_health"
     "repo_check_lock"
@@ -96,8 +96,8 @@ script_functions=(
     "backup_compact"
     "backup_create"
     "backup_delete"
-    "backup_list_and_mail"
     "backup_mount"
+    "backup_list_and_mail"
     "repo_change_passphrase"
     "repo_check_health"
     "repo_check_lock"
@@ -214,15 +214,17 @@ backup_compact() {
 }
 
 backup_create() {
-    local include_path="${1:-/}"
-    local silent="${2:-false}"
+    local silent="${1:-false}"
     [[ "$silent" != true ]] && set_variables "full"
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
+    # Array aus der Konfiguration verwenden
+    local -a include_paths=("${backup_paths[@]}")
     local create_output
+
     create_output=$(borg create "${borg_create_opts[@]}" \
         --stats --progress \
         "${repo_path}::${snapshot_name}" \
-        "$include_path" 2>&1)
+        "${include_paths[@]}" 2>&1)
     backup_exit=$?
     if [[ $backup_exit -ne 0 ]]; then
         if echo "$create_output" | grep -q "Archive .* already exists"; then
@@ -239,7 +241,7 @@ backup_create() {
     if [[ "${mail_enabled:-true}" == true ]]; then
         log_step "> Sending email notification" "ok"
         debug_msg "mail -s \"$(hostname) backup - [${snapshot_name}]\" ${mail_recipient} < ${temp}"
-        run_cmd mail -s \"$(hostname) backup - [${snapshot_name}]\" "${mail_recipient}" < "${temp}"
+        run_cmd mail -s "$(hostname) backup - [${snapshot_name}]" "${mail_recipient}" < "${temp}"
     fi
     log_step "> Sending status heartbeat" "ok"
     if [[ $backup_exit -eq 0 ]]; then
@@ -525,7 +527,7 @@ main() {
     repo_check_status true
     backup_compact true
     repo_check_lock true
-    backup_create "/" true
+    backup_create true
     cleanup
 }
 
