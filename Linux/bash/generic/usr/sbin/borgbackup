@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20240605.02
+# Version=20240605.03
 
 #set -euo pipefail
 trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
@@ -50,7 +50,7 @@ if [[ -f "$USER_CONFIG" ]]; then
     source "$USER_CONFIG"
 fi
 
-if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_repo_name_format:-}" || -z "${borg_backup_name_format:-}" ]]; then
+if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
     echo "No valid configuration found!"
     exit 10
 fi
@@ -62,8 +62,22 @@ NC='\033[0m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 
-repo_name=$(eval echo "$borg_repo_name_format")
-repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
+# Repository name is now optional for maximum compatibility (e.g. with BorgBase)
+# If not set or empty, repo_path is built without it
+if [[ -n "${borg_repo_name_format:-}" ]]; then
+    repo_name=$(eval echo "${borg_repo_name_format}")
+else
+    repo_name=""
+fi
+
+if [[ -n "$repo_name" ]]; then
+    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
+else
+    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}"
+fi
+
+#repo_name=$(eval echo "$borg_repo_name_format")
+#repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
 
 help_functions=(
     "backup_compact"
@@ -225,7 +239,7 @@ backup_create() {
     if [[ "${mail_enabled:-true}" == true ]]; then
         log_step "> Sending email notification" "ok"
         debug_msg "mail -s \"$(hostname) backup - [${snapshot_name}]\" ${mail_recipient} < ${temp}"
-        run_cmd mail -s "$(hostname) backup - [${snapshot_name}]" "${mail_recipient}" < "${temp}"
+        run_cmd mail -s \"$(hostname) backup - [${snapshot_name}]\" "${mail_recipient}" < "${temp}"
     fi
     log_step "> Sending status heartbeat" "ok"
     if [[ $backup_exit -eq 0 ]]; then
@@ -294,7 +308,7 @@ $(cat "$repo_info_file")
 
 EOF
         debug_msg "mail -s \"$subject\" $mail_recipient < $mailfile"
-        run_cmd mail -s "$subject" "$mail_recipient" < "$mailfile"
+        run_cmd mail -s \"$subject\" "$mail_recipient" < "$mailfile"
         rm -f "$mailfile"
     fi
     rm -f "$backup_info_file"
