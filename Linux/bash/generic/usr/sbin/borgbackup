@@ -1,0 +1,467 @@
+#!/bin/bash
+# Version=20240605.01
+
+#set -euo pipefail
+trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
+
+GLOBAL_CONFIG="/etc/borgbackup.conf"
+USER_CONFIG="$HOME/.config/borgbackup/borgbackup.conf"
+
+# Rechteprüfung für Konfigurationsdateien
+check_config_permissions() {
+    local cfg="$1"
+    if [[ -f "$cfg" ]]; then
+        local mode
+        mode=$(stat -c "%a" "$cfg")
+        if [[ "$mode" != "600" ]]; then
+            echo "ERROR: Config file $cfg must have permissions 0600, but has $mode"
+            exit 10
+        fi
+    fi
+}
+
+check_config_permissions "$GLOBAL_CONFIG"
+check_config_permissions "$USER_CONFIG"
+
+# Standardmäßig: Logging nur in Datei, bei -v zusätzlich auf Konsole
+log_to_console=0
+debug=0
+
+# Argumentverarbeitung für -v und -vv
+args=()
+for arg in "$@"; do
+    if [[ "$arg" == "-vv" ]]; then
+        debug=1
+        log_to_console=1
+    elif [[ "$arg" == "-v" ]]; then
+        log_to_console=1
+    else
+        args+=("$arg")
+    fi
+done
+set -- "${args[@]}"
+
+# Konfiguration einlesen
+if [[ -f "$GLOBAL_CONFIG" ]]; then
+    # shellcheck source=/dev/null
+    source "$GLOBAL_CONFIG"
+fi
+if [[ -f "$USER_CONFIG" ]]; then
+    # shellcheck source=/dev/null
+    source "$USER_CONFIG"
+fi
+
+if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_repo_name_format:-}" || -z "${borg_backup_name_format:-}" ]]; then
+    echo "No valid configuration found!"
+    exit 10
+fi
+
+export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
+
+RED='\033[0;31m'
+NC='\033[0m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+
+repo_name=$(eval echo "$borg_repo_name_format")
+repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
+
+help_functions=(
+    "check_repo_status"
+    "check_repo_lock"
+    "check_repo_health"
+    "backup_create"
+    "backup_prune_old"
+    "backup_delete_current"
+    "backup_list_and_mail"
+    "backup_mount"
+    "repo_change_passphrase"
+    "run_self_update"
+)
+
+script_functions=(
+    "check_repo_status"
+    "check_repo_lock"
+    "check_repo_health"
+    "backup_create"
+    "backup_prune_old"
+    "backup_delete_current"
+    "backup_list_and_mail"
+    "backup_mount"
+    "repo_change_passphrase"
+    "check_self_update"
+    "run_self_update"
+)
+
+# Logging-Setup
+log_raw() {
+    # Entfernt alle ANSI-Codes für die Logdatei
+    local clean_line
+    clean_line="$(echo -e "$1" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')"
+    if [[ -n "${log_path:-}" ]]; then
+        echo "$clean_line" >> "$log_path"
+        if [[ "$log_to_console" == "1" ]]; then
+            echo -e "$1"
+        fi
+    else
+        echo -e "$1"
+    fi
+}
+
+log_step() {
+    local msg="$1"
+    local status="$2"
+    local tag="Borgbackup"
+    local backupname=""
+    if [[ -n "${snapshot_name:-}" ]]; then
+        backupname="[${snapshot_name}] "
+    fi
+    local line
+    if [[ -n "$status" ]]; then
+        line="${msg} (${GREEN}${status}${NC})"
+    else
+        line="$msg"
+    fi
+    log_raw "$line"
+    logger -t "$tag" "${backupname}$(echo -e "$line" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')"
+}
+
+log_error() {
+    local msg="$1"
+    local tag="Borgbackup"
+    local backupname=""
+    if [[ -n "${snapshot_name:-}" ]]; then
+        backupname="[${snapshot_name}] "
+    fi
+    local line="${RED}${msg}${NC}"
+    log_raw "$line"
+    logger -t "$tag" "${backupname}> ERROR: $(echo -e "$msg" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')"
+}
+
+debug_msg() {
+    [[ "$debug" == "1" ]] && log_raw "  ${YELLOW}\$ $*${NC}"
+}
+
+run_cmd() {
+    local cmd="$*"
+    debug_msg "$cmd"
+    eval "$cmd"
+    local rc=$?
+    if [[ $rc -ne 0 ]]; then
+        log_error "Error running command: $cmd"
+        exit 2
+    fi
+}
+
+tempfile() {
+    umask 077
+    local tempprefix
+    tempprefix=$(basename "$0")
+    mktemp "/tmp/${tempprefix}.XXXXXX"
+}
+
+set_variables() {
+    local job_name="${1:-full}"
+    export BORG_PASSPHRASE="${borg_passphrase}"
+    export BORG_RSH="ssh -p ${ssh_remote_port} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
+    snapshot_name=$(eval echo "$borg_backup_name_format")
+    temp=$(tempfile)
+    log_step "> Setting variables for backup job [${job_name}]" "ok"
+    debug_msg "BORG_RSH=${BORG_RSH}"
+    debug_msg "repo_name=${repo_name}"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "temp=${temp}"
+}
+
+check_repo_status() {
+    set_variables "full"
+    log_step "> Checking repository status" "ok"
+    if borg info "$repo_path" > /dev/null 2>&1; then
+        log_step "> Repository already initialized, skipping init." "ok"
+        return 0
+    fi
+    run_cmd borg init -e repokey "$repo_path"
+}
+
+check_repo_lock() {
+    set_variables "full"
+    log_step "> Checking repository lock" "ok"
+    local repostatus
+    repostatus=$(run_cmd borg info "$repo_path" 2>&1)
+    if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
+        log_step "${YELLOW}! Lock found. Force unlocking${NC}"
+        run_cmd borg break-lock "$repo_path"
+        exit 2
+    fi
+}
+
+check_repo_health() {
+    set_variables "full"
+    log_step "> Checking repository health (quick)" "ok"
+    if ! run_cmd borg check "$repo_path"; then
+        log_step "${YELLOW}! Error found, attempting repair...${NC}"
+        run_cmd borg check --repair "$repo_path"
+    fi
+}
+
+backup_create() {
+    set_variables "full"
+    local include_path="${1:-/}"
+    local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
+    if [[ "${borg_local_filesystem_only:-false}" == true ]]; then
+        borg_create_opts+=("--one-file-system")
+    fi
+    log_step "> Running backup of ${include_path}" "ok"
+    run_cmd borg create "${borg_create_opts[@]}" \
+        --stats --progress \
+        "${repo_path}::${snapshot_name}" \
+        "$include_path"
+
+    log_step "> Verifying backup completeness" "ok"
+    local backupstatus
+    backupstatus=$(run_cmd borg info "${repo_path}::${snapshot_name}" 2>&1)
+    if [[ "${backupstatus}" == *"does not exist"* ]]; then
+        log_step "${YELLOW}! Backup incomplete, retrying...${NC}"
+        backup_create "${include_path}"
+    fi
+
+    log_step "> Generating backup report" "ok"
+    run_cmd borg info "${repo_path}::${snapshot_name}" | grep -v "Command line" > "${temp}"
+
+    if [[ "${mail_enabled:-true}" == true ]]; then
+        log_step "> Sending email notification" "ok"
+        debug_msg "mail -s \"$(hostname) backup - [${snapshot_name}]\" ${mail_recipient} < ${temp}"
+        run_cmd mail -s "$(hostname) backup - [${snapshot_name}]" "${mail_recipient}" < "${temp}"
+    fi
+
+    log_step "> Sending status heartbeat" "ok"
+    [[ $(cat "${temp}") == *"This archive"* ]] && run_cmd curl -sS "https://status.cscholz.io/api/push/JplnzpIqf7?status=up&msg=OK&ping=" >/dev/null
+}
+
+backup_prune_old() {
+    set_variables "full"
+    log_step "> Pruning old backups" "ok"
+    run_cmd borg prune "$repo_path" -v --list --keep-within=6m --keep-weekly=84 --keep-monthly=36
+    log_step "> Compacting repository" "ok"
+    run_cmd borg compact "$repo_path" -v --threshold 5
+}
+
+backup_delete_current() {
+    set_variables "${1:-full}"
+    log_step "> Deleting current backup: ${snapshot_name}" "ok"
+    run_cmd borg delete -v "${repo_path}::${snapshot_name}"
+}
+
+backup_list_and_mail() {
+    set_variables "full"
+    log_step "> Listing all backups in the repository" "ok"
+    local subject="$(hostname) backup - [${repo_name}]"
+    local mailfile
+    mailfile=$(tempfile)
+
+    debug_msg "borg info $repo_path"
+    echo "==== Repository Status ====" > "$mailfile"
+    run_cmd borg info "$repo_path" >> "$mailfile"
+
+    debug_msg "borg list $repo_path"
+    echo -e "\n==== Backup List ====" >> "$mailfile"
+    run_cmd borg list "$repo_path" >> "$mailfile"
+
+    if [[ "${mail_enabled:-true}" == true ]]; then
+        log_step "> Sending backup list via email" "ok"
+        debug_msg "mail -s \"$subject\" $mail_recipient < $mailfile"
+        run_cmd mail -s "$subject" "$mail_recipient" < "$mailfile"
+    fi
+    cat "$mailfile"
+    rm -f "$mailfile"
+}
+
+backup_mount() {
+    set_variables "full"
+    local archive="${1:-}"
+    local mountpoint="${borg_mount_point:-/mnt/borgbackup_mount}"
+
+    if [[ -z "$mountpoint" ]]; then
+        log_error "No mount point (borg_mount_point) specified in configuration!"
+        exit 2
+    fi
+
+    if [[ ! -d "$mountpoint" ]]; then
+        log_step "> Creating mount directory $mountpoint" "ok"
+        run_cmd mkdir -p "$mountpoint"
+    fi
+
+    if [[ -n "$archive" ]]; then
+        log_step "> Mounting archive '$archive' to $mountpoint" "ok"
+        run_cmd borg mount "${repo_path}::${archive}" "$mountpoint"
+    else
+        log_step "> Mounting repository read-only to $mountpoint" "ok"
+        run_cmd borg mount "$repo_path" "$mountpoint"
+    fi
+    echo "Unmount with: borg umount $mountpoint"
+}
+
+repo_change_passphrase() {
+    set_variables "full"
+    log_step "> Changing repository passphrase" "ok"
+    run_cmd borg key change-passphrase "$repo_path"
+    log_step "> Repository passphrase changed successfully" "ok"
+}
+
+cleanup() {
+    log_step "> Cleaning up variables" "ok"
+    unset BORG_PASSPHRASE BORG_RSH temp snapshot_name
+}
+
+check_self_update() {
+  self=$(basename "${0}")
+  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+
+  local myself_web_version
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\\.[0-9.]{1,2})" )
+  echo "Web:" "${myself_web_version}"
+  myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
+  echo "Local:" "${myself_local_version}"
+  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
+    read -p "Update (y/N) " -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+      run_self_update "${self}" "${update_base}"
+    fi
+  else
+    echo "No update available (v.${myself_local_version})"
+  fi
+}
+
+run_self_update() {
+  self=${1}
+  update_base=${2}
+
+  echo "> Performing self-update..."
+
+  # Download new version
+  echo -n "> Downloading latest version..."
+  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
+    echo "Failed: Error while trying to wget new version!"
+    echo "File requested: ${update_base}/${self}"
+    exit 2
+  fi
+  echo "Done."
+
+  # Download MD5 of update
+  echo -n "> Downloading md5 sum..."
+  if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
+    echo "Failed: Error while trying to wget md5sum!"
+    echo "File requested: ${update_base}${self}.md5"
+    exit 2
+  fi
+  echo "Done."
+
+  # Checking MD5 sum
+  echo -n "> Checking MD5 sum..."
+  web_md5=$(cat "${0}.md5" | awk '{print $1}')
+  local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
+  if [[ $web_md5 != "${local_md5}" ]]; then
+    echo "Failed. Abort!"
+    echo "${web_md5} / ${local_md5}"
+    rm "${0}.md5"
+    exit 2
+  fi
+  echo "Ok"
+  rm "${0}.md5"
+
+  # Copy over modes from old version
+  OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
+  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
+    echo "Failed: Error while trying to set mode on ${0}.tmp."
+    exit 2
+  fi
+
+  # Spawn update script
+  cat > updateScript.sh << EOF
+#!/bin/bash
+if mv "${0}.tmp" "${0}"; then
+  echo "Done. Update complete."
+  rm \${0}
+else
+  echo "Failed. Please try again!"
+  rm \${0}
+fi
+EOF
+
+  echo -n "> Start update process..."
+  exec /bin/bash updateScript.sh
+}
+
+show_help() {
+    cat <<EOF
+Usage: $0 [OPTION] [FUNCTION]
+
+Options:
+  -v                Enable log output to console (in addition to logfile)
+  -vv               Enable debug output (shows all commands and variables)
+  -u                Perform a self-update
+  --help            Show this help message
+
+Configuration:
+  - global:   /etc/borgbackup.conf
+  - user:     ~/.config/borgbackup/borgbackup.conf
+  (User config overrides global settings)
+
+Available functions (can be called individually):
+
+$(for f in "${help_functions[@]}"; do echo "  $f"; done)
+
+Examples:
+  $0                        Runs the full backup (main)
+  $0 check_repo_health       Only runs the repository health check
+  $0 backup_create /         Only creates a backup of /
+  $0 backup_delete_current   Deletes the current backup (default: full)
+  $0 backup_prune_old        Prunes old backups according to retention rules
+  $0 backup_list_and_mail    Lists all backups and sends the list by e-mail
+  $0 backup_mount [ARCHIVE]  Mounts a backup (or the whole repo) to \$borg_mount_point
+  $0 repo_change_passphrase  Changes the repository key passphrase
+  $0 -u                     Performs a self-update
+
+EOF
+}
+
+main() {
+    set_variables "full"
+    check_repo_status
+    backup_prune_old
+    check_repo_lock
+    backup_create /
+    cleanup
+}
+
+if [[ "$1" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
+if [[ "$1" == "-u" ]]; then
+    check_self_update
+    exit 0
+fi
+
+if [[ -n "$1" ]]; then
+    func="$1"
+    shift
+    if [[ " ${script_functions[*]} " == *" $func "* ]]; then
+        if [[ "$func" == "set_variables" || "$func" == "cleanup" || "$func" == "main" ]]; then
+            echo "The function $func is internal and cannot be called directly."
+            exit 1
+        fi
+        "$func" "$@"
+        exit $?
+    else
+        echo "Unknown function: $func"
+        show_help
+        exit 1
+    fi
+else
+    main
+fi
