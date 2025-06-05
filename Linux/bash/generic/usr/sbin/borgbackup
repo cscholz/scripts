@@ -6,7 +6,7 @@
 trap 'cleanup' EXIT INT TERM
 
 GLOBAL_CONFIG="/etc/borgbackup.conf"
-USER_CONFIG="$HOME/.config/borgbackup/borgbackup.conf"
+USER_CONFIG="$HOME/.config/borgbackup.conf"
 
 variables_initialized=false
 
