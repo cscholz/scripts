@@ -1,12 +1,11 @@
 #!/bin/bash
-# Version=20240605.05
+# Version=20250606.01
 
 #set -euo pipefail
-#trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
-trap 'cleanup' EXIT INT TERM
+trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
 
 GLOBAL_CONFIG="/etc/borgbackup.conf"
-USER_CONFIG="$HOME/.config/borgbackup.conf"
+USER_CONFIG="$HOME/.config/borgbackup/borgbackup.conf"
 
 variables_initialized=false
 
@@ -63,46 +62,38 @@ NC='\033[0m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 
-# Repository name is now optional for maximum compatibility (e.g. with BorgBase)
-# If not set or empty, repo_path is built without it
-if [[ -n "${borg_repo_name_format:-}" ]]; then
-    repo_name=$(eval echo "${borg_repo_name_format}")
-else
-    repo_name=""
-fi
-
+repo_name=$(eval echo "${borg_repo_name_format:-}")
 if [[ -n "$repo_name" ]]; then
     repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
 else
     repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}"
 fi
 
-#repo_name=$(eval echo "$borg_repo_name_format")
-#repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
-
 help_functions=(
-    "backup_compact"
     "backup_create [path]"
     "backup_delete [archive_name]"
-    "backup_mount [archive_name]"
     "backup_list_and_mail"
+    "backup_mount [archive_name]"
     "repo_change_passphrase"
     "repo_check_health"
-    "repo_check_lock"
     "repo_check_status"
+    "repo_compact"
+    "repo_lock_check"
+    "repo_lock_break"
     "script_self_update"
 )
 
 script_functions=(
-    "backup_compact"
     "backup_create"
     "backup_delete"
-    "backup_mount"
     "backup_list_and_mail"
+    "backup_mount"
     "repo_change_passphrase"
     "repo_check_health"
-    "repo_check_lock"
     "repo_check_status"
+    "repo_compact"
+    "repo_lock_check"
+    "repo_lock_break"
     "check_self_update"
     "script_self_update"
 )
@@ -172,6 +163,10 @@ tempfile() {
     mktemp "/tmp/${tempprefix}.XXXXXX"
 }
 
+escape_mail_subject() {
+    printf "%s" "$1" | sed "s/'/'\"'\"'/g"
+}
+
 set_variables() {
     local job_name="${1:-full}"
     local silent="${2:-false}"
@@ -193,56 +188,36 @@ set_variables() {
     fi
 }
 
-backup_compact() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Pruning old backups" "ok"
-    run_cmd borg prune "$repo_path" -v --list \
-        --keep-within="${borg_keep_within:-6m}" \
-        --keep-daily="${borg_keep_daily:-7}" \
-        --keep-weekly="${borg_keep_weekly:-12}" \
-        --keep-monthly="${borg_keep_monthly:-12}" \
-        --keep-yearly="${borg_keep_yearly:-3}"
-    log_step "> Compacting repository" "ok"
-    local threshold="${borg_compact_threshold:-10}"
-    debug_msg "Using compaction threshold: ${threshold}%"
-    run_cmd borg compact "$repo_path" -v --threshold "$threshold"
-    if [[ "$debug" == "1" ]]; then
-        local repo_info
-        repo_info=$(borg info "$repo_path")
-        debug_msg "Repository status after compaction:\n${repo_info}"
-    fi
-}
-
 backup_create() {
-    local silent="${1:-false}"
+    local include_path="${1:-}"
+    local silent="${2:-false}"
     [[ "$silent" != true ]] && set_variables "full"
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
-    # Array aus der Konfiguration verwenden
-    local -a include_paths=("${backup_paths[@]}")
-    local create_output
-
-    create_output=$(borg create "${borg_create_opts[@]}" \
-        --stats --progress \
-        "${repo_path}::${snapshot_name}" \
-        "${include_paths[@]}" 2>&1)
+    local -a include_paths
+    if [[ -n "$include_path" ]]; then
+        include_paths=("$include_path")
+    elif [[ -n "${backup_paths[*]}" ]]; then
+        include_paths=("${backup_paths[@]}")
+    else
+        include_paths=("/")
+    fi
+    log_step "> Running backup for ${include_paths[*]}" "ok"
+    debug_msg "borg create ${borg_create_opts[*]} --stats --progress ${repo_path}::${snapshot_name} ${include_paths[*]}"
+    borg create "${borg_create_opts[@]}" --stats --progress "${repo_path}::${snapshot_name}" "${include_paths[@]}"
     backup_exit=$?
     if [[ $backup_exit -ne 0 ]]; then
-        if echo "$create_output" | grep -q "Archive .* already exists"; then
-            log_step "> Archive ${snapshot_name} already exists, skipping backup." "ok"
-            debug_msg "$create_output"
-            return 0
-        else
-            log_error "Error creating backup: $create_output"
-            exit 2
-        fi
+        log_error "Backup failed with exit code $backup_exit"
+        exit 2
     fi
     log_step "> Generating backup report" "ok"
     run_cmd borg info "${repo_path}::${snapshot_name}" | grep -v "Command line" > "${temp}"
-    if [[ "${mail_enabled:-true}" == true ]]; then
+    if [[ -n "${mail_recipient:-}" ]]; then
         log_step "> Sending email notification" "ok"
-        debug_msg "mail -s \"$(hostname) backup - [${snapshot_name}]\" ${mail_recipient} < ${temp}"
-        run_cmd mail -s "$(hostname) backup - [${snapshot_name}]" "${mail_recipient}" < "${temp}"
+        local subject="$(hostname) backup - [${snapshot_name}]"
+        local escaped_subject
+        escaped_subject="$(escape_mail_subject "$subject")"
+        debug_msg "mail -s '$escaped_subject' ${mail_recipient} < ${temp}"
+        run_cmd "mail -s '$escaped_subject' '${mail_recipient}' < '${temp}'"
     fi
     log_step "> Sending status heartbeat" "ok"
     if [[ $backup_exit -eq 0 ]]; then
@@ -285,9 +260,11 @@ backup_delete() {
         log_step "> Warning: Could not collect repository information after deletion" "warning"
         echo "Repository information not available" > "$repo_info_file"
     fi
-    if [[ "${mail_enabled:-true}" == true ]]; then
+    if [[ -n "${mail_recipient:-}" ]]; then
         log_step "> Sending deletion notification email" "ok"
         local subject="$(hostname) backup deleted - [${archive_name}]"
+        local escaped_subject
+        escaped_subject="$(escape_mail_subject "$subject")"
         local mailfile
         mailfile=$(tempfile)
         cat > "$mailfile" << EOF
@@ -310,8 +287,8 @@ Repository Information (collected after deletion):
 $(cat "$repo_info_file")
 
 EOF
-        debug_msg "mail -s \"$subject\" $mail_recipient < $mailfile"
-        run_cmd mail -s \"$subject\" "$mail_recipient" < "$mailfile"
+        debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
+        run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
         rm -f "$mailfile"
     fi
     rm -f "$backup_info_file"
@@ -323,6 +300,8 @@ backup_list_and_mail() {
     [[ "$silent" != true ]] && set_variables "full"
     log_step "> Listing all backups in the repository" "ok"
     local subject="$(hostname) backup - [${repo_name}]"
+    local escaped_subject
+    escaped_subject="$(escape_mail_subject "$subject")"
     local mailfile
     mailfile=$(tempfile)
     debug_msg "borg info $repo_path"
@@ -331,10 +310,10 @@ backup_list_and_mail() {
     debug_msg "borg list $repo_path"
     echo -e "\n==== Backup List ====" >> "$mailfile"
     run_cmd borg list "$repo_path" >> "$mailfile"
-    if [[ "${mail_enabled:-true}" == true ]]; then
+    if [[ -n "${mail_recipient:-}" ]]; then
         log_step "> Sending backup list via email" "ok"
-        debug_msg "mail -s \"$subject\" $mail_recipient < $mailfile"
-        run_cmd mail -s "$subject" "$mail_recipient" < "$mailfile"
+        debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
+        run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
     fi
     cat "$mailfile"
     rm -f "$mailfile"
@@ -381,19 +360,6 @@ repo_check_health() {
     fi
 }
 
-repo_check_lock() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Checking repository lock" "ok"
-    local repostatus
-    repostatus=$(run_cmd borg info "$repo_path" 2>&1)
-    if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
-        log_step "${YELLOW}! Lock found. Force unlocking and aborting.${NC}"
-        run_cmd borg break-lock "$repo_path"
-        exit 2
-    fi
-}
-
 repo_check_status() {
     local silent="${1:-false}"
     [[ "$silent" != true ]] && set_variables "full"
@@ -417,9 +383,62 @@ repo_check_status() {
     fi
 }
 
+repo_compact() {
+    local silent="${1:-false}"
+    [[ "$silent" != true ]] && set_variables "full"
+    log_step "> Pruning old backups" "ok"
+    run_cmd borg prune "$repo_path" -v --list \
+        --keep-within="${borg_keep_within:-6m}" \
+        --keep-daily="${borg_keep_daily:-7}" \
+        --keep-weekly="${borg_keep_weekly:-12}" \
+        --keep-monthly="${borg_keep_monthly:-12}" \
+        --keep-yearly="${borg_keep_yearly:-3}"
+    log_step "> Compacting repository" "ok"
+    local threshold="${borg_compact_threshold:-10}"
+    debug_msg "Using compaction threshold: ${threshold}%"
+    run_cmd borg compact "$repo_path" -v --threshold "$threshold"
+    if [[ "$debug" == "1" ]]; then
+        local repo_info
+        repo_info=$(borg info "$repo_path")
+        debug_msg "Repository status after compaction:\n${repo_info}"
+    fi
+}
+
+repo_lock_check() {
+    local silent="${1:-false}"
+    [[ "$silent" != true ]] && set_variables "full"
+    log_step "> Checking repository lock" "ok"
+    local repostatus
+    repostatus=$(run_cmd borg info "$repo_path" 2>&1)
+    if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
+        log_step "${YELLOW}! Lock found.${NC}"
+        return 1
+    fi
+    log_step "> No lock found." "ok"
+    return 0
+}
+
+repo_lock_break() {
+    local silent="${1:-false}"
+    [[ "$silent" != true ]] && set_variables "full"
+    repo_lock_check true
+    if [[ $? -ne 1 ]]; then
+        log_step "> No lock present. Nothing to break." "ok"
+        return 0
+    fi
+    echo -n "A repository lock was found. Do you really want to break the lock? [y/N] "
+    read -r answer
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        echo "Aborted by user."
+        return 1
+    fi
+    log_step "> Breaking repository lock..." "ok"
+    run_cmd borg break-lock "$repo_path"
+    log_step "> Repository lock broken." "ok"
+}
+
 cleanup() {
     log_step "> Cleaning up variables" "ok"
-    rm -f "$temp"
     unset BORG_PASSPHRASE BORG_RSH temp snapshot_name
 }
 
@@ -467,8 +486,7 @@ script_self_update() {
   local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
   if [[ $web_md5 != "${local_md5}" ]]; then
     echo "Failed. Abort!"
-    echo "  Web:   ${web_md5}"
-    echo "  Local: ${local_md5}"
+    echo "${web_md5} / ${local_md5}"
     rm "${0}.md5"
     exit 2
   fi
@@ -495,7 +513,13 @@ EOF
 
 show_help() {
     cat <<EOF
-Usage: $0 [OPTION] [FUNCTION]
+Configuration:
+  - global:   /etc/borgbackup.conf
+  - user:     ~/.config/borgbackup/borgbackup.conf
+  (User config overrides global settings)
+
+Usage:
+  $0 [OPTION] [FUNCTION]
 
 Options:
   -v                Enable log output to console (in addition to logfile)
@@ -503,38 +527,35 @@ Options:
   -u                Perform a self-update
   --help            Show this help message
 
-Configuration:
-  - global:   /etc/borgbackup.conf
-  - user:     ~/.config/borgbackup/borgbackup.conf
-  (User config overrides global settings)
-
-Available functions (can be called individually):
-$(for f in "${help_functions[@]}"; do echo "  $f"; done)
+Functions:
+  backup_create [path]
+  backup_delete [archive_name]
+  backup_list_and_mail
+  backup_mount [archive_name]
+  repo_change_passphrase
+  repo_check_health
+  repo_check_status
+  repo_compact
+  repo_lock_check
+  repo_lock_break
+  script_self_update
 
 Examples:
-  $0                            Runs the full backup (main)
-  $0 repo_check_health          Only runs the repository health check
-  $0 backup_create /            Only creates a backup of /
-  $0 backup_delete <archive>    Deletes the specified backup
-  $0 backup_compact             Prunes old backups according to retention rules
-  $0 backup_list_and_mail       Lists all backups and sends the list by e-mail
-  $0 backup_mount [archive]     Mounts a backup (or the whole repo) to \$borg_mount_point
-  $0 repo_change_passphrase     Changes the repository key passphrase
-  $0 -u                         Performs a self-update
+  $0 backup_create                     # backup of all paths in backup_paths or "/"
+  $0 backup_create /home               # backup only /home
+  $0 backup_mount                      # mount repository read-only (default)
+  $0 backup_mount 2025-06-05-full      # mount specific archive
+  $0 repo_lock_check                   # check if repo is locked
+  $0 repo_lock_break                   # interactively break lock if present
+  $0 backup_delete 2025-06-05-full     # delete specific archive
+  $0 repo_compact                      # prune and compact repository
+  $0 script_self_update                # update the script
+  $0 --help                            # show this help
 
 EOF
 }
 
-main() {
-    set_variables "full" false
-    repo_check_status true
-    backup_compact true
-    repo_check_lock true
-    backup_create true
-    cleanup
-}
-
-if [[ "$1" == "--help" ]]; then
+if [[ $# -eq 0 || "$1" == "--help" ]]; then
     show_help
     exit 0
 fi
@@ -548,7 +569,7 @@ if [[ -n "$1" ]]; then
     func="$1"
     shift
     if [[ " ${script_functions[*]} " == *" $func "* ]]; then
-        if [[ "$func" == "set_variables" || "$func" == "cleanup" || "$func" == "main" ]]; then
+        if [[ "$func" == "set_variables" || "$func" == "cleanup" ]]; then
             echo "The function $func is internal and cannot be called directly."
             exit 1
         fi
@@ -559,6 +580,4 @@ if [[ -n "$1" ]]; then
         show_help
         exit 1
     fi
-else
-    main
 fi
