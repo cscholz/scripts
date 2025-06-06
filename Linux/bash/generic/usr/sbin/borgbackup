@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250606.01
+# Version=20250606.02
 
 #set -euo pipefail
 trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
@@ -62,6 +62,10 @@ NC='\033[0m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 
+#if [[ "$log_to_console" != "1" ]]; then
+#  RED=''; GREEN=''; YELLOW=''; NC=''
+#fi
+
 repo_name=$(eval echo "${borg_repo_name_format:-}")
 if [[ -n "$repo_name" ]]; then
     repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
@@ -100,7 +104,7 @@ script_functions=(
 
 log_raw() {
     local clean_line
-    clean_line=$(echo -e "$1" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')
+    clean_line=$(printf "%s" "$1" | sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g')
     if [[ -n "${log_path:-}" ]]; then
         echo "$clean_line" >> "$log_path"
         if [[ "$log_to_console" == "1" ]]; then
@@ -192,6 +196,11 @@ backup_create() {
     local include_path="${1:-}"
     local silent="${2:-false}"
     [[ "$silent" != true ]] && set_variables "full"
+    # Lock-Prüfung am Anfang
+    if ! repo_lock_check; then
+        log_error "Repository is locked. Aborting backup."
+        exit 2
+    fi
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
     local -a include_paths
     if [[ -n "$include_path" ]]; then
@@ -374,7 +383,7 @@ repo_check_status() {
     if [[ $init_exit_code -eq 0 ]]; then
         log_step "> Repository successfully initialized." "ok"
         return 0
-    elif [[ "$init_result" == *"A repository already exists"* ]]; then
+    elif [[ "$init_result" == *"  A repository already exists"* ]]; then
         log_step "> Repository already exists, continuing." "ok"
         return 0
     else
@@ -406,12 +415,41 @@ repo_compact() {
 
 repo_lock_check() {
     local silent="${1:-false}"
+    local send_mail="${2:-true}"
     [[ "$silent" != true ]] && set_variables "full"
     log_step "> Checking repository lock" "ok"
     local repostatus
-    repostatus=$(run_cmd borg info "$repo_path" 2>&1)
+    repostatus=$(borg info "$repo_path" 2>&1)
     if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
         log_step "${YELLOW}! Lock found.${NC}"
+        # E-Mail-Benachrichtigung bei Lock nur, wenn send_mail==true
+        if [[ "$send_mail" == "true" && -n "${mail_recipient:-}" ]]; then
+            local subject="${HOSTNAME:-$(hostname)} Backup aborted (Locked)"
+            local escaped_subject
+            escaped_subject="$(escape_mail_subject "$subject")"
+            local mailfile
+            mailfile=$(tempfile)
+            cat > "$mailfile" << EOF
+Repository Lock Notification
+============================
+
+Host: $(hostname)
+Repository: ${repo_path}
+Detection Time: $(date)
+
+A repository lock was detected during backup operations.
+
+borg info output:
+-----------------
+${repostatus}
+
+Please check for running or interrupted borg processes before breaking the lock.
+EOF
+            log_step "> Sending lock notification email" "ok"
+            debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
+            run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
+            rm -f "$mailfile"
+        fi
         return 1
     fi
     log_step "> No lock found." "ok"
@@ -421,7 +459,8 @@ repo_lock_check() {
 repo_lock_break() {
     local silent="${1:-false}"
     [[ "$silent" != true ]] && set_variables "full"
-    repo_lock_check true
+    # Lock-Check ohne Mail
+    repo_lock_check true false
     if [[ $? -ne 1 ]]; then
         log_step "> No lock present. Nothing to break." "ok"
         return 0
@@ -435,6 +474,31 @@ repo_lock_break() {
     log_step "> Breaking repository lock..." "ok"
     run_cmd borg break-lock "$repo_path"
     log_step "> Repository lock broken." "ok"
+    # E-Mail-Benachrichtigung über das Brechen des Locks
+    if [[ -n "${mail_recipient:-}" ]]; then
+        local subject="${HOSTNAME:-$(hostname)} Repository lock was broken"
+        local escaped_subject
+        escaped_subject="$(escape_mail_subject "$subject")"
+        local mailfile
+        mailfile=$(tempfile)
+        cat > "$mailfile" << EOF
+Repository Lock Break Notification
+==================================
+
+Host: $(hostname)
+Repository: ${repo_path}
+Unlock Time: $(date)
+
+The repository lock was manually broken via borg break-lock.
+
+Please ensure that no other borg process was running during this operation.
+
+EOF
+        log_step "> Sending lock break notification email" "ok"
+        debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
+        run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
+        rm -f "$mailfile"
+    fi
 }
 
 cleanup() {
