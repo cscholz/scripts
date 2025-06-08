@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250608.13
+# Version=20250608.14
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -372,42 +372,45 @@ repo_lock_break() {
 run_self_update() {
     self=${1}
     update_base=${2}
-    log_status "[ ] Performing self-update"
+    log_status "[ ] Performing self-update" 0  # Kein Zeilenumbruch, überschreibbar
     debug_msg "wget --quiet --output-document=${0}.tmp ${update_base}/${self}"
     if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}"; then
-        log_status "[${RED}✗${NC}] Failed: Error while trying to wget new version!" 1
+        log_status "[${RED}✗${NC}] Performing self-update" 1  # Bei Fehler: Zeilenumbruch, damit die Fehlermeldung sichtbar bleibt
         exit 1
     fi
     debug_msg "wget --quiet --output-document=${0}.md5 ${update_base}${self}.md5"
     if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5"; then
-        log_status "[${RED}✗${NC}] Failed: Error while trying to wget md5sum!" 1
+        log_status "[${RED}✗${NC}] Performing self-update" 1
         exit 1
     fi
     local web_md5=$(awk '{print $1}' < "${0}.md5")
     local local_md5=$(md5sum "$(realpath "${0}.tmp")" | awk '{print $1}')
     if [[ "$web_md5" != "$local_md5" ]]; then
-        log_status "[${RED}✗${NC}] Failed: MD5 mismatch! Aborting." 1
+        log_status "[${RED}✗${NC}] Performing self-update" 1
+        log_status "MD5 mismatch! Web: $web_md5 Local: $local_md5" 1
         rm "${0}.md5"
         exit 1
     fi
     rm "${0}.md5"
     local octal_mode=$(stat -c '%a' "$(realpath "${0}")")
     if ! chmod "$octal_mode" "${0}.tmp"; then
-        log_status "[${RED}✗${NC}] Failed: Error while trying to set mode on ${0}.tmp." 1
+        log_status "[${RED}✗${NC}] Performing self-update" 1
         exit 1
     fi
+    # Nach allen Prüfungen: Statuszeile mit grüner Checkbox, ohne Zeilenumbruch
+    log_status "[${GREEN}✓${NC}] Performing self-update" 0
     cat > updateScript.sh <<EOF
 #!/bin/bash
-if mv "${0}.tmp" "${0}"; then
-  echo "Done. Update complete."
-  rm \${0}
+if mv "$0.tmp" "$0"; then
+    rm \${0}
 else
-  echo "Failed. Please try again!"
-  rm \${0}
+    echo "Failed. Please try again!"
+    rm \${0}
 fi
 EOF
     debug_msg "Starting update process..."
     exec /bin/bash updateScript.sh
+    # Hinweis: Die Zeile nach exec wird nie erreicht!
 }
 
 check_self_update() {
