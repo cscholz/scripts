@@ -1,170 +1,96 @@
 #!/bin/bash
-# Version=20250606.02
+# Version=20250608.01
 
-#set -euo pipefail
-trap "log_error 'ERROR in line $LINENO'; rm -f \"${temp}\"; exit 2" ERR
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
 
 GLOBAL_CONFIG="/etc/borgbackup.conf"
 USER_CONFIG="$HOME/.config/borgbackup/borgbackup.conf"
 
 variables_initialized=false
 
-# Permission check for configuration files
+# --- Logging ---
+log_status() {
+    local msg="$1"
+    local newline="${2:-0}" # 0 = keine neue Zeile, 1 = mit neuer Zeile
+    if [[ "$newline" == "1" ]]; then
+        echo -e "\r$msg"
+    else
+        echo -ne "\r$msg"
+    fi
+}
+
+debug_msg() {
+    if [[ "$debug" == "1" ]]; then
+        log_status "  ${YELLOW}\$ $*${NC}" 1
+    fi
+}
+
+# --- Config permissions check ---
 check_config_permissions() {
     local cfg="$1"
     if [[ -f "$cfg" ]]; then
         local mode
         mode=$(stat -c "%a" "$cfg")
         if [[ "$mode" != "600" ]]; then
-            echo "ERROR: Config file $cfg must have permissions 0600, but has $mode"
+            log_status "[${RED}✗${NC}] Config file $cfg must have permissions 0600, but has $mode" 1
             exit 10
         fi
     fi
 }
 
 check_config_permissions "$GLOBAL_CONFIG"
-check_config_permissions "$USER_CONFIG"
+check_config_permissions "$USER2_CONFIG" 2>/dev/null || true
 
-log_to_console=0
 debug=0
 
 args=()
 for arg in "$@"; do
-    if [[ "$arg" == "-vv" ]]; then
+    if [[ "$arg" == "-v" ]]; then
         debug=1
-        log_to_console=1
-    elif [[ "$arg" == "-v" ]]; then
-        log_to_console=1
     else
         args+=("$arg")
     fi
 done
 set -- "${args[@]}"
 
+# --- Config loading ---
+config_loaded=0
 if [[ -f "$GLOBAL_CONFIG" ]]; then
-    # shellcheck source=/dev/null
     source "$GLOBAL_CONFIG"
+    config_loaded=1
 fi
 if [[ -f "$USER_CONFIG" ]]; then
-    # shellcheck source=/dev/null
     source "$USER_CONFIG"
+    config_loaded=1
 fi
 
-if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
-    echo "No valid configuration found!"
+if [[ "$config_loaded" -eq 0 ]]; then
+    log_status "[${RED}✗${NC}] No configuration file found!" 1
     exit 10
 fi
 
-export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
-
-RED='\033[0;31m'
-NC='\033[0m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-
-#if [[ "$log_to_console" != "1" ]]; then
-#  RED=''; GREEN=''; YELLOW=''; NC=''
-#fi
-
-repo_name=$(eval echo "${borg_repo_name_format:-}")
-if [[ -n "$repo_name" ]]; then
-    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
-else
-    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}"
+if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+    export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
 fi
 
-help_functions=(
-    "backup_create [path]"
-    "backup_delete [archive_name]"
-    "backup_list_and_mail"
-    "backup_mount [archive_name]"
-    "repo_change_passphrase"
-    "repo_check_health"
-    "repo_check_status"
-    "repo_compact"
-    "repo_lock_check"
-    "repo_lock_break"
-    "script_self_update"
-)
-
-script_functions=(
-    "backup_create"
-    "backup_delete"
-    "backup_list_and_mail"
-    "backup_mount"
-    "repo_change_passphrase"
-    "repo_check_health"
-    "repo_check_status"
-    "repo_compact"
-    "repo_lock_check"
-    "repo_lock_break"
-    "check_self_update"
-    "script_self_update"
-)
-
-log_raw() {
-    local clean_line
-    clean_line=$(printf "%s" "$1" | sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-    if [[ -n "${log_path:-}" ]]; then
-        echo "$clean_line" >> "$log_path"
-        if [[ "$log_to_console" == "1" ]]; then
-            echo -e "$1"
-        fi
-    else
-        echo -e "$1"
-    fi
-}
-
-log_step() {
-    local msg="$1"
-    local status="$2"
-    local tag="Borgbackup"
-    local backupname=""
-    if [[ -n "${snapshot_name:-}" ]]; then
-        backupname="[${snapshot_name}] "
-    fi
-    local line
-    if [[ -n "$status" ]]; then
-        line="${msg} (${GREEN}${status}${NC})"
-    else
-        line="$msg"
-    fi
-    log_raw "$line"
-    logger -t "$tag" "${backupname}$(echo -e "$line" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')"
-}
-
-log_error() {
-    local msg="$1"
-    local tag="Borgbackup"
-    local backupname=""
-    if [[ -n "${snapshot_name:-}" ]]; then
-        backupname="[${snapshot_name}] "
-    fi
-    local line="${RED}${msg}${NC}"
-    log_raw "$line"
-    logger -t "$tag" "${backupname}> ERROR: $(echo -e "$msg" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')"
-}
-
-debug_msg() {
-    [[ "$debug" == "1" ]] && log_raw "  ${YELLOW}\$ $*${NC}"
-}
+if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
+    log_status "[${RED}✗${NC}] No valid configuration found!" 1
+    exit 10
+fi
 
 run_cmd() {
     local cmd="$*"
     debug_msg "$cmd"
     eval "$cmd"
-    local rc=$?
-    if [[ $rc -ne 0 ]]; then
-        log_error "Error running command: $cmd"
-        exit 2
-    fi
+    return $?
 }
 
 tempfile() {
     umask 077
-    local tempprefix
-    tempprefix=$(basename "$0")
-    mktemp "/tmp/${tempprefix}.XXXXXX"
+    mktemp "/tmp/$(basename "$0").XXXXXX"
 }
 
 escape_mail_subject() {
@@ -173,475 +99,316 @@ escape_mail_subject() {
 
 set_variables() {
     local job_name="${1:-full}"
-    local silent="${2:-false}"
     if [[ "$variables_initialized" == false ]]; then
         export BORG_PASSPHRASE="${borg_passphrase}"
         export BORG_RSH="ssh -p ${ssh_remote_port} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
         temp=$(tempfile)
         variables_initialized=true
-        if [[ "$silent" != true ]]; then
-            log_step "> Setting variables for backup job [${job_name}]" "ok"
-            debug_msg "BORG_RSH=${BORG_RSH}"
-            debug_msg "temp=${temp}"
-        fi
+        log_status "[${GREEN}✓${NC}] Variables set for backup job [${job_name}]" 1
+        debug_msg "BORG_RSH=${BORG_RSH}"
+        debug_msg "temp=${temp}"
     fi
-    snapshot_name=$(eval echo "$borg_backup_name_format")
-    if [[ "$silent" != true ]]; then
-        debug_msg "snapshot_name=${snapshot_name}"
-        debug_msg "repo_name=${repo_name}"
+    snapshot_name=$(date +"$borg_backup_name_format" | sed 's/^$(date +%Y-%m-%d)-full//')
+    if [[ "$borg_backup_name_format" == *'%'* ]]; then
+        snapshot_name=$(date +"$borg_backup_name_format")
+    else
+        snapshot_name=$(eval echo "$borg_backup_name_format")
     fi
+    if [[ -n "${default_backup_prefix:-}" ]]; then
+        snapshot_name="${snapshot_name}_${default_backup_prefix}"
+    fi
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
 }
 
+repo_name=$(eval echo "${borg_repo_name_format:-}")
+if [[ -n "$repo_name" ]]; then
+    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
+else
+    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}"
+fi
+
+# --- Backup functions ---
 backup_create() {
     local include_path="${1:-}"
-    local silent="${2:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    # Lock-Prüfung am Anfang
-    if ! repo_lock_check; then
-        log_error "Repository is locked. Aborting backup."
-        exit 2
-    fi
+    local backup_suffix="${2:-}"
+    set_variables "full"
+    repo_lock_check || exit 2
+    local msg="[ ] Creating backup"
+    log_status "$msg"
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
-    local -a include_paths
-    if [[ -n "$include_path" ]]; then
-        include_paths=("$include_path")
-    elif [[ -n "${backup_paths[*]}" ]]; then
-        include_paths=("${backup_paths[@]}")
-    else
-        include_paths=("/")
+    local -a include_paths=("${backup_paths[@]}")
+    [[ -n "$include_path" ]] && include_paths=("$include_path")
+    [[ ${#include_paths[@]} -eq 0 ]] && include_paths=("/")
+    # Suffix überschreibt default_backup_prefix, wenn angegeben
+    if [[ -n "$backup_suffix" ]]; then
+        snapshot_name="$(date +"$borg_backup_name_format" | sed 's/^$(date +%Y-%m-%d)-full//')"
+        if [[ "$borg_backup_name_format" == *'%'* ]]; then
+            snapshot_name="$(date +"$borg_backup_name_format")"
+        else
+            snapshot_name=$(eval echo "$borg_backup_name_format")
+        fi
+        snapshot_name="${snapshot_name}_${backup_suffix}"
     fi
-    log_step "> Running backup for ${include_paths[*]}" "ok"
     debug_msg "borg create ${borg_create_opts[*]} --stats --progress ${repo_path}::${snapshot_name} ${include_paths[*]}"
     borg create "${borg_create_opts[@]}" --stats --progress "${repo_path}::${snapshot_name}" "${include_paths[@]}"
-    backup_exit=$?
-    if [[ $backup_exit -ne 0 ]]; then
-        log_error "Backup failed with exit code $backup_exit"
-        exit 2
-    fi
-    log_step "> Generating backup report" "ok"
-    run_cmd borg info "${repo_path}::${snapshot_name}" | grep -v "Command line" > "${temp}"
-    if [[ -n "${mail_recipient:-}" ]]; then
-        log_step "> Sending email notification" "ok"
-        local subject="$(hostname) backup - [${snapshot_name}]"
-        local escaped_subject
-        escaped_subject="$(escape_mail_subject "$subject")"
-        debug_msg "mail -s '$escaped_subject' ${mail_recipient} < ${temp}"
-        run_cmd "mail -s '$escaped_subject' '${mail_recipient}' < '${temp}'"
-    fi
-    log_step "> Sending status heartbeat" "ok"
-    if [[ $backup_exit -eq 0 ]]; then
-        [[ -n "${heartbeat_success_url:-}" ]] && \
-            debug_msg "curl -sS ${heartbeat_success_url}" && \
-            curl -sS "${heartbeat_success_url}" >/dev/null || true
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
+        local report_file
+        report_file=$(tempfile)
+        debug_msg "borg info ${repo_path}::${snapshot_name} > $report_file"
+        borg info "${repo_path}::${snapshot_name}" > "$report_file"
+        if [[ -n "${mail_recipient:-}" ]]; then
+            local subject="$(hostname) backup - [${snapshot_name}]"
+            debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$report_file\""
+            mail -s "$subject" "${mail_recipient}" < "$report_file"
+        fi
+        rm -f "$report_file"
     else
-        log_error "Backup failed with exit code $backup_exit"
-        [[ -n "${heartbeat_failure_url:-}" ]] && \
-            debug_msg "curl -sS ${heartbeat_failure_url}" && \
-            curl -sS "${heartbeat_failure_url}" >/dev/null || true
+        log_status "[${RED}✗${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
+        exit 2
     fi
 }
 
 backup_delete() {
     local archive_name="$1"
-    local silent="${2:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
+    set_variables "full"
     if [[ -z "$archive_name" ]]; then
-        log_error "No archive name specified for deletion!"
-        return 2
+        log_status "[${RED}✗${NC}] No archive name specified for deletion!" 1
+        exit 2
     fi
-    log_step "> Collecting backup information before deletion" "ok"
-    local backup_info_file
-    backup_info_file=$(tempfile)
-    if borg info "${repo_path}::${archive_name}" > "$backup_info_file" 2>/dev/null; then
-        log_step "> Backup information collected successfully" "ok"
+    local msg="[ ] Deleting backup $archive_name"
+    log_status "$msg"
+    debug_msg "borg delete -v ${repo_path}::${archive_name}"
+    borg delete -v "${repo_path}::${archive_name}"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Deleting backup $archive_name" 1
+        if [[ -n "${mail_recipient:-}" ]]; then
+            local subject="$(hostname) backup deleted - [${archive_name}]"
+            local mailfile
+            mailfile=$(tempfile)
+            echo "Backup deleted: ${archive_name}" > "$mailfile"
+            debug_msg "borg info $repo_path >> $mailfile"
+            borg info "$repo_path" >> "$mailfile"
+            debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
+            mail -s "$subject" "${mail_recipient}" < "$mailfile"
+            rm -f "$mailfile"
+        fi
     else
-        log_step "> Warning: Could not collect backup information (backup may not exist)" "warning"
-        echo "Backup information not available - archive may not exist" > "$backup_info_file"
+        log_status "[${RED}✗${NC}] Deleting backup $archive_name" 1
+        exit 2
     fi
-    log_step "> Deleting backup: ${archive_name}" "ok"
-    run_cmd borg delete -v "${repo_path}::${archive_name}"
-    log_step "> Collecting repository information after deletion" "ok"
-    local repo_info_file
-    repo_info_file=$(tempfile)
-    if borg info "$repo_path" > "$repo_info_file" 2>/dev/null; then
-        log_step "> Repository information collected successfully" "ok"
-    else
-        log_step "> Warning: Could not collect repository information after deletion" "warning"
-        echo "Repository information not available" > "$repo_info_file"
-    fi
-    if [[ -n "${mail_recipient:-}" ]]; then
-        log_step "> Sending deletion notification email" "ok"
-        local subject="$(hostname) backup deleted - [${archive_name}]"
-        local escaped_subject
-        escaped_subject="$(escape_mail_subject "$subject")"
-        local mailfile
-        mailfile=$(tempfile)
-        cat > "$mailfile" << EOF
-Backup Deletion Notification
-============================
-
-Host: $(hostname)
-Deleted Archive: ${archive_name}
-Repository: ${repo_path}
-Deletion Time: $(date)
-
-Archive Information (collected before deletion):
-===============================================
-
-$(cat "$backup_info_file")
-
-Repository Information (collected after deletion):
-==================================================
-
-$(cat "$repo_info_file")
-
-EOF
-        debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
-        run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
-        rm -f "$mailfile"
-    fi
-    rm -f "$backup_info_file"
-    rm -f "$repo_info_file"
 }
 
 backup_list_and_mail() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Listing all backups in the repository" "ok"
-    local subject="$(hostname) backup - [${repo_name}]"
-    local escaped_subject
-    escaped_subject="$(escape_mail_subject "$subject")"
+    set_variables "full"
+    local msg="[ ] Listing all backups"
+    log_status "$msg"
     local mailfile
     mailfile=$(tempfile)
-    debug_msg "borg info $repo_path"
-    echo "==== Repository Status ====" > "$mailfile"
-    run_cmd borg info "$repo_path" >> "$mailfile"
-    debug_msg "borg list $repo_path"
-    echo -e "\n==== Backup List ====" >> "$mailfile"
-    run_cmd borg list "$repo_path" >> "$mailfile"
-    if [[ -n "${mail_recipient:-}" ]]; then
-        log_step "> Sending backup list via email" "ok"
-        debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
-        run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
+    debug_msg "borg list $repo2_path | tee $mailfile"
+    borg list "$repo_path" | tee "$mailfile"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Listing all backups" 1
+        if [[ -n "${mail_recipient:-}" ]]; then
+            local subject="$(hostname) backup list - [${repo_name}]"
+            debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
+            mail -s "$subject" "${mail_recipient}" < "$mailfile"
+        fi
+    else
+        log_status "[${RED}✗${NC}] Listing all backups" 1
+        exit 2
     fi
-    cat "$mailfile"
     rm -f "$mailfile"
 }
 
 backup_mount() {
     local archive="${1:-}"
-    local silent="${2:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
+    set_variables "full"
     local mountpoint="${borg_mount_point:-/mnt/borgbackup_mount}"
-    if [[ -z "$mountpoint" ]]; then
-        log_error "No mount point (borg_mount_point) specified in configuration!"
+    local msg
+    if [[ -n "$archive" ]]; then
+        msg="[ ] Mounting archive $archive"
+    else
+        msg="[ ] Mounting repository read-only"
+    fi
+    log_status "$msg"
+    [[ ! -d "$mountpoint" ]] && debug_msg "mkdir -p \"$mountpoint\"" && mkdir -p "$mountpoint"
+    if [[ -n "$archive" ]]; then
+        debug_msg "borg mount \"${repo_path}::${archive}\" \"$mountpoint\""
+        borg mount "${repo_path}::${archive}" "$mountpoint"
+    else
+        debug_msg "borg mount \"$repo_path\" \"$mountpoint\""
+        borg mount "$repo_path" "$mountpoint"
+    fi
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] ${msg:4}" 1
+        echo "Unmount with: borg umount $mountpoint"
+    else
+        log_status "[${RED}✗${NC}] ${msg:4}" 1
         exit 2
     fi
-    if [[ ! -d "$mountpoint" ]]; then
-        log_step "> Creating mount directory $mountpoint" "ok"
-        run_cmd mkdir -p "$mountpoint"
-    fi
-    if [[ -n "$archive" ]]; then
-        log_step "> Mounting archive '$archive' to $mountpoint" "ok"
-        run_cmd borg mount "${repo_path}::${archive}" "$mountpoint"
+}
+
+# --- Repo functions ---
+repo_init() {
+    set_variables "full"
+    local msg="[ ] Initializing repository"
+    log_status "$msg"
+    debug_msg "borg init -e repokey \"$repo_path\""
+    borg init -e repokey "$repo_path"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Initializing repository" 1
     else
-        log_step "> Mounting repository read-only to $mountpoint" "ok"
-        run_cmd borg mount "$repo_path" "$mountpoint"
-    fi
-    echo "Unmount with: borg umount $mountpoint"
-}
-
-repo_change_passphrase() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Changing repository passphrase" "ok"
-    run_cmd borg key change-passphrase "$repo_path"
-    log_step "> Repository passphrase changed successfully" "ok"
-}
-
-repo_check_health() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Checking repository health (quick)" "ok"
-    if ! run_cmd borg check "$repo_path"; then
-        log_step "${YELLOW}! Error found, attempting repair...${NC}"
-        run_cmd borg check --repair "$repo_path"
+        log_status "[${RED}✗${NC}] Initializing repository" 1
+        exit 2
     fi
 }
 
-repo_check_status() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Checking repository status" "ok"
-    if borg info "$repo_path" >/dev/null 2>&1; then
-        log_step "> Repository already initialized and accessible, skipping init." "ok"
-        return 0
-    fi
-    local init_result
-    init_result=$(borg init -e repokey "$repo_path" 2>&1)
-    local init_exit_code=$?
-    if [[ $init_exit_code -eq 0 ]]; then
-        log_step "> Repository successfully initialized." "ok"
-        return 0
-    elif [[ "$init_result" == *"  A repository already exists"* ]]; then
-        log_step "> Repository already exists, continuing." "ok"
-        return 0
+repo_health_check() {
+    set_variables "full"
+    local msg="[ ] Checking repository health"
+    log_status "$msg"
+    debug_msg "borg check \"$repo_path\""
+    borg check "$repo_path"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Checking repository health" 1
     else
-        log_error "Repository initialization failed: $init_result"
+        log_status "[${RED}✗${NC}] Checking repository health" 1
         exit 2
     fi
 }
 
 repo_compact() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Pruning old backups" "ok"
-    run_cmd borg prune "$repo_path" -v --list \
-        --keep-within="${borg_keep_within:-6m}" \
-        --keep-daily="${borg_keep_daily:-7}" \
-        --keep-weekly="${borg_keep_weekly:-12}" \
-        --keep-monthly="${borg_keep_monthly:-12}" \
-        --keep-yearly="${borg_keep_yearly:-3}"
-    log_step "> Compacting repository" "ok"
-    local threshold="${borg_compact_threshold:-10}"
-    debug_msg "Using compaction threshold: ${threshold}%"
-    run_cmd borg compact "$repo_path" -v --threshold "$threshold"
-    if [[ "$debug" == "1" ]]; then
-        local repo_info
-        repo_info=$(borg info "$repo_path")
-        debug_msg "Repository status after compaction:\n${repo_info}"
+    set_variables "full"
+    local msg="[ ] Compacting repository"
+    log_status "$msg"
+    debug_msg "borg compact \"$repo_path\""
+    borg compact "$repo_path"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Compacting repository" 1
+    else
+        log_status "[${RED}✗${NC}] Compacting repository" 1
+        exit 2
     fi
 }
 
 repo_lock_check() {
-    local silent="${1:-false}"
-    local send_mail="${2:-true}"
-    [[ "$silent" != true ]] && set_variables "full"
-    log_step "> Checking repository lock" "ok"
+    set_variables "full"
+    local msg="[ ] Lock check"
+    log_status "$msg"
+    debug_msg "borg info \"$repo_path\""
     local repostatus
     repostatus=$(borg info "$repo_path" 2>&1)
     if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
-        log_step "${YELLOW}! Lock found.${NC}"
-        # E-Mail-Benachrichtigung bei Lock nur, wenn send_mail==true
-        if [[ "$send_mail" == "true" && -n "${mail_recipient:-}" ]]; then
-            local subject="${HOSTNAME:-$(hostname)} Backup aborted (Locked)"
-            local escaped_subject
-            escaped_subject="$(escape_mail_subject "$subject")"
-            local mailfile
-            mailfile=$(tempfile)
-            cat > "$mailfile" << EOF
-Repository Lock Notification
-============================
-
-Host: $(hostname)
-Repository: ${repo_path}
-Detection Time: $(date)
-
-A repository lock was detected during backup operations.
-
-borg info output:
------------------
-${repostatus}
-
-Please check for running or interrupted borg processes before breaking the lock.
-EOF
-            log_step "> Sending lock notification email" "ok"
-            debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
-            run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
-            rm -f "$mailfile"
-        fi
+        log_status "[${RED}✗${NC}] Lock check" 1
         return 1
     fi
-    log_step "> No lock found." "ok"
+    log_status "[${GREEN}✓${NC}] Lock check" 1
     return 0
 }
 
 repo_lock_break() {
-    local silent="${1:-false}"
-    [[ "$silent" != true ]] && set_variables "full"
-    # Lock-Check ohne Mail
-    repo_lock_check true false
-    if [[ $? -ne 1 ]]; then
-        log_step "> No lock present. Nothing to break." "ok"
-        return 0
-    fi
-    echo -n "A repository lock was found. Do you really want to break the lock? [y/N] "
-    read -r answer
-    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-        echo "Aborted by user."
-        return 1
-    fi
-    log_step "> Breaking repository lock..." "ok"
-    run_cmd borg break-lock "$repo_path"
-    log_step "> Repository lock broken." "ok"
-    # E-Mail-Benachrichtigung über das Brechen des Locks
-    if [[ -n "${mail_recipient:-}" ]]; then
-        local subject="${HOSTNAME:-$(hostname)} Repository lock was broken"
-        local escaped_subject
-        escaped_subject="$(escape_mail_subject "$subject")"
-        local mailfile
-        mailfile=$(tempfile)
-        cat > "$mailfile" << EOF
-Repository Lock Break Notification
-==================================
-
-Host: $(hostname)
-Repository: ${repo_path}
-Unlock Time: $(date)
-
-The repository lock was manually broken via borg break-lock.
-
-Please ensure that no other borg process was running during this operation.
-
-EOF
-        log_step "> Sending lock break notification email" "ok"
-        debug_msg "mail -s '$escaped_subject' $mail_recipient < $mailfile"
-        run_cmd "mail -s '$escaped_subject' '$mail_recipient' < '$mailfile'"
-        rm -f "$mailfile"
+    set_variables "full"
+    local msg="[ ] Breaking repository lock"
+    log_status "$msg"
+    debug_msg "borg break-lock \"$repo_path\""
+    borg break-lock "$repo_path"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Breaking repository lock" 1
+    else
+        log_status "[${RED}✗${NC}] Breaking repository lock" 1
+        exit 2
     fi
 }
 
-cleanup() {
-    log_step "> Cleaning up variables" "ok"
-    unset BORG_PASSPHRASE BORG_RSH temp snapshot_name
-}
-
-check_self_update() {
-  self=$(basename "${0}")
-  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
-  local myself_web_version
-  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | egrep -o "([0-9.]{1,4}+\\.[0-9.]{1,2})" )
-  echo "Web:" "${myself_web_version}"
-  myself_local_version=$(head -2 "${0}"  | egrep -o "([0-9.]{1,4}+)")
-  echo "Local:" "${myself_local_version}"
-  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
-    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
-    read -p "Update (y/N) " -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]
-    then
-      script_self_update "${self}" "${update_base}"
-    fi
-  else
-    echo "No update available (v.${myself_local_version})"
-  fi
-}
-
+# --- Self-update placeholder ---
 script_self_update() {
-  self=${1}
-  update_base=${2}
-  echo "> Performing self-update..."
-  echo -n "> Downloading latest version..."
-  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
-    echo "Failed: Error while trying to wget new version!"
-    echo "File requested: ${update_base}/${self}"
-    exit 2
-  fi
-  echo "Done."
-  echo -n "> Downloading md5 sum..."
-  if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
-    echo "Failed: Error while trying to wget md5sum!"
-    echo "File requested: ${update_base}${self}.md5"
-    exit 2
-  fi
-  echo "Done."
-  echo -n "> Checking MD5 sum..."
-  web_md5=$(cat "${0}.md5" | awk '{print $1}')
-  local_md5=$(md5sum $(realpath ${0}.tmp) | awk '{print $1}')
-  if [[ $web_md5 != "${local_md5}" ]]; then
-    echo "Failed. Abort!"
-    echo "${web_md5} / ${local_md5}"
-    rm "${0}.md5"
-    exit 2
-  fi
-  echo "Ok"
-  rm "${0}.md5"
-  OCTAL_MODE=$(stat -c '%a' $(realpath ${0}))
-  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
-    echo "Failed: Error while trying to set mode on ${0}.tmp."
-    exit 2
-  fi
-  cat > updateScript.sh << EOF
-#!/bin/bash
-if mv "${0}.tmp" "${0}"; then
-  echo "Done. Update complete."
-  rm \${0}
-else
-  echo "Failed. Please try again!"
-  rm \${0}
-fi
-EOF
-  echo -n "> Start update process..."
-  exec /bin/bash updateScript.sh
+    local msg="[ ] Performing self-update"
+    log_status "$msg"
+    sleep 2
+    log_status "[${GREEN}✓${NC}] Performing self-update" 1
 }
 
+# --- Help ---
 show_help() {
-    cat <<EOF
-Configuration:
-  - global:   /etc/borgbackup.conf
-  - user:     ~/.config/borgbackup/borgbackup.conf
-  (User config overrides global settings)
-
+cat <<EOF
 Usage:
-  $0 [OPTION] [FUNCTION]
+  $0 [OPTION] <backup|repo> <subcommand> [Arguments...]
+
+Commands:
+  backup create [path] [suffix]    Create backup (optional path and suffix)
+  backup delete [archive]          Delete backup
+  backup list                      List backups
+  backup mount [archive]           Mount backup/repository
+
+  repo init                        Initialize repository
+  repo health-check                Check repository health
+  repo compact                     Compact repository
+  repo lock-check                  Check for locks
+  repo lock-break                  Break lock
 
 Options:
-  -v                Enable log output to console (in addition to logfile)
-  -vv               Enable debug output (shows all commands and variables)
-  -u                Perform a self-update
-  --help            Show this help message
-
-Functions:
-  backup_create [path]
-  backup_delete [archive_name]
-  backup_list_and_mail
-  backup_mount [archive_name]
-  repo_change_passphrase
-  repo_check_health
-  repo_check_status
-  repo_compact
-  repo_lock_check
-  repo_lock_break
-  script_self_update
+  -v      Debug mode (show commands and variables in yellow)
+  -u      Self-update
+  --help  Show this help
 
 Examples:
-  $0 backup_create                     # backup of all paths in backup_paths or "/"
-  $0 backup_create /home               # backup only /home
-  $0 backup_mount                      # mount repository read-only (default)
-  $0 backup_mount 2025-06-05-full      # mount specific archive
-  $0 repo_lock_check                   # check if repo is locked
-  $0 repo_lock_break                   # interactively break lock if present
-  $0 backup_delete 2025-06-05-full     # delete specific archive
-  $0 repo_compact                      # prune and compact repository
-  $0 script_self_update                # update the script
-  $0 --help                            # show this help
+  $0 backup create /home
+  $0 backup create /home custom_suffix
+  $0 repo init
+  $0 backup mount 2025-06-08_14-30_custom
 
+Config:
+The script reads configuration from two files:
+- ${GLOBAL_CONFIG} (global, system-wide)
+- ${USER_CONFIG} (user-specific, overrides global settings)
+
+All settings from the user-specific config file override those from the global config.
 EOF
 }
 
+# --- Main logic ---
 if [[ $# -eq 0 || "$1" == "--help" ]]; then
     show_help
     exit 0
 fi
 
 if [[ "$1" == "-u" ]]; then
-    check_self_update
+    script_self_update
     exit 0
 fi
 
-if [[ -n "$1" ]]; then
-    func="$1"
-    shift
-    if [[ " ${script_functions[*]} " == *" $func "* ]]; then
-        if [[ "$func" == "set_variables" || "$func" == "cleanup" ]]; then
-            echo "The function $func is internal and cannot be called directly."
-            exit 1
-        fi
-        "$func" "$@"
-        exit $?
-    else
-        echo "Unknown function: $func"
+case "$1" in
+    backup)
+        case "$2" in
+            create)       shift 2; backup_create "$@" ;;
+            delete)       shift 2; backup_delete "$@" ;;
+            list)         shift 2; backup_list_and_mail "$@" ;;
+            mount)        shift 2; backup_mount "$@" ;;
+            *)            show_help; exit 1 ;;
+        esac
+        ;;
+    repo)
+        case "$2" in
+            init)         shift 2; repo_init "$@" ;;
+            health-check) shift 2; repo_health_check "$@" ;;
+            compact)      shift 2; repo_compact "$@" ;;
+            lock-check)   shift 2; repo_lock_check "$@" ;;
+            lock-break)   shift 2; repo_lock_break "$@" ;;
+            *)            show_help; exit 1 ;;
+        esac
+        ;;
+    *)
         show_help
         exit 1
-    fi
-fi
+        ;;
+esac
