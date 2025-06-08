@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250608.01
+# Version=20250608.07
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -42,7 +42,7 @@ check_config_permissions() {
 }
 
 check_config_permissions "$GLOBAL_CONFIG"
-check_config_permissions "$USER2_CONFIG" 2>/dev/null || true
+check_config_permissions "$USER_CONFIG" 2>/dev/null || true
 
 debug=0
 
@@ -104,7 +104,7 @@ set_variables() {
         export BORG_RSH="ssh -p ${ssh_remote_port} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
         temp=$(tempfile)
         variables_initialized=true
-        log_status "[${GREEN}✓${NC}] Variables set for backup job [${job_name}]" 1
+        log_status "[${GREEN}✓${NC}] Setting variables" 1
         debug_msg "BORG_RSH=${BORG_RSH}"
         debug_msg "temp=${temp}"
     fi
@@ -117,29 +117,35 @@ set_variables() {
     if [[ -n "${default_backup_prefix:-}" ]]; then
         snapshot_name="${snapshot_name}_${default_backup_prefix}"
     fi
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
+    # Keine Debug-Ausgaben mehr hier!
 }
 
 repo_name=$(eval echo "${borg_repo_name_format:-}")
 if [[ -n "$repo_name" ]]; then
     repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
 else
-    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}"
+    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote2_folder}"
 fi
 
 # --- Backup functions ---
 backup_create() {
-    local include_path="${1:-}"
+    local include2_path="${1:-}"
     local backup_suffix="${2:-}"
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     repo_lock_check || exit 2
     local msg="[ ] Creating backup"
-    log_status "$msg"
+    log_status "$msg" 1
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
-    local -a include_paths=("${backup_paths[@]}")
-    [[ -n "$include_path" ]] && include_paths=("$include_path")
-    [[ ${#include_paths[@]} -eq 0 ]] && include_paths=("/")
+    local -a include_paths=()
+    if [[ -n "$include2_path" ]]; then
+        include_paths=("$include2_path")
+    elif [[ -n "${backup_paths[*]}" ]]; then
+        include_paths=("${backup_paths[@]}")
+    else
+        include_paths=("/")
+    fi
     # Suffix überschreibt default_backup_prefix, wenn angegeben
     if [[ -n "$backup_suffix" ]]; then
         snapshot_name="$(date +"$borg_backup_name_format" | sed 's/^$(date +%Y-%m-%d)-full//')"
@@ -164,9 +170,17 @@ backup_create() {
             debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$report_file\""
             mail -s "$subject" "${mail_recipient}" < "$report_file"
         fi
+        if [[ -n "${heartbeat_success_url:-}" ]]; then
+            debug_msg "curl -sS \"${heartbeat_success_url}\""
+            curl -sS "${heartbeat_success_url}" >/dev/null || true
+        fi
         rm -f "$report_file"
     else
         log_status "[${RED}✗${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
+        if [[ -n "${heartbeat_failure_url:-}" ]]; then
+            debug_msg "curl -sS \"${heartbeat_failure_url}\""
+            curl -sS "${heartbeat_failure_url}" >/dev/null || true
+        fi
         exit 2
     fi
 }
@@ -174,6 +188,8 @@ backup_create() {
 backup_delete() {
     local archive_name="$1"
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     if [[ -z "$archive_name" ]]; then
         log_status "[${RED}✗${NC}] No archive name specified for deletion!" 1
         exit 2
@@ -204,12 +220,15 @@ backup_delete() {
 
 backup_list_and_mail() {
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo2_name:-}"
     local msg="[ ] Listing all backups"
     log_status "$msg"
     local mailfile
     mailfile=$(tempfile)
-    debug_msg "borg list $repo2_path | tee $mailfile"
-    borg list "$repo_path" | tee "$mailfile"
+    debug_msg "borg list $repo_path | tee $mailfile"
+    # Temporärer Dateiinhalt zur Fehlerprüfung
+    borg list "$repo_path" > "$mailfile" 2>&1
     local rc=$?
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Listing all backups" 1
@@ -220,15 +239,19 @@ backup_list_and_mail() {
         fi
     else
         log_status "[${RED}✗${NC}] Listing all backups" 1
-        exit 2
+        # Keine E-Mail bei Fehler
     fi
+    # Debug: Ausgabe der Liste auf die Konsole, egal ob Fehler oder nicht
+    cat "$mailfile"
     rm -f "$mailfile"
 }
 
 backup_mount() {
     local archive="${1:-}"
+    local mountpoint="${2:-${borg_mount_point:-/mnt/borgbackup_mount}}"
     set_variables "full"
-    local mountpoint="${borg_mount_point:-/mnt/borgbackup_mount}"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg
     if [[ -n "$archive" ]]; then
         msg="[ ] Mounting archive $archive"
@@ -257,6 +280,8 @@ backup_mount() {
 # --- Repo functions ---
 repo_init() {
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Initializing repository"
     log_status "$msg"
     debug_msg "borg init -e repokey \"$repo_path\""
@@ -272,6 +297,8 @@ repo_init() {
 
 repo_health_check() {
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Checking repository health"
     log_status "$msg"
     debug_msg "borg check \"$repo_path\""
@@ -287,10 +314,12 @@ repo_health_check() {
 
 repo_compact() {
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Compacting repository"
-    log_status "$msg"
-    debug_msg "borg compact \"$repo_path\""
-    borg compact "$repo_path"
+    log_status "$msg" 1
+    debug_msg "borg compact --progress --threshold ${borg_compact_threshold:-10} \"$repo_path\""
+    borg compact --progress --threshold "${borg_compact_threshold:-10}" "$repo_path"
     local rc=$?
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Compacting repository" 1
@@ -302,6 +331,8 @@ repo_compact() {
 
 repo_lock_check() {
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Lock check"
     log_status "$msg"
     debug_msg "borg info \"$repo_path\""
@@ -317,6 +348,8 @@ repo_lock_check() {
 
 repo_lock_break() {
     set_variables "full"
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Breaking repository lock"
     log_status "$msg"
     debug_msg "borg break-lock \"$repo_path\""
@@ -342,13 +375,13 @@ script_self_update() {
 show_help() {
 cat <<EOF
 Usage:
-  $0 [OPTION] <backup|repo> <subcommand> [Arguments...]
+  $0 [commands] <backup|repo> <subcommand> [Arguments...]
 
 Commands:
-  backup create [path] [suffix]    Create backup (optional path and suffix)
-  backup delete [archive]          Delete backup
+  backup create <path> <suffix>    Create backup (optional path and suffix)
+  backup delete <archive>          Delete backup
   backup list                      List backups
-  backup mount [archive]           Mount backup/repository
+  backup mount <archive> <path>    Mount backup/repository (optional archive and path)
 
   repo init                        Initialize repository
   repo health-check                Check repository health
@@ -366,6 +399,7 @@ Examples:
   $0 backup create /home custom_suffix
   $0 repo init
   $0 backup mount 2025-06-08_14-30_custom
+  $0 backup mount 2025-06-08_14-30_custom /mnt/my_mountpoint
 
 Config:
 The script reads configuration from two files:
