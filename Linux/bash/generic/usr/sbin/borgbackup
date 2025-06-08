@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250608.07
+# Version=20250608.13
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -115,21 +115,20 @@ set_variables() {
         snapshot_name=$(eval echo "$borg_backup_name_format")
     fi
     if [[ -n "${default_backup_prefix:-}" ]]; then
-        snapshot_name="${snapshot_name}_${default_backup_prefix}"
+        snapshot2_name="${snapshot_name}_${default_backup_prefix}"
     fi
-    # Keine Debug-Ausgaben mehr hier!
 }
 
 repo_name=$(eval echo "${borg_repo_name_format:-}")
 if [[ -n "$repo_name" ]]; then
     repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}${repo_name}"
 else
-    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote2_folder}"
+    repo_path="${ssh_remote_user}@${ssh_remote_host}:${ssh_remote_folder}"
 fi
 
 # --- Backup functions ---
 backup_create() {
-    local include2_path="${1:-}"
+    local include_path="${1:-}"
     local backup_suffix="${2:-}"
     set_variables "full"
     debug_msg "snapshot_name=${snapshot_name}"
@@ -138,15 +137,9 @@ backup_create() {
     local msg="[ ] Creating backup"
     log_status "$msg" 1
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
-    local -a include_paths=()
-    if [[ -n "$include2_path" ]]; then
-        include_paths=("$include2_path")
-    elif [[ -n "${backup_paths[*]}" ]]; then
-        include_paths=("${backup_paths[@]}")
-    else
-        include_paths=("/")
-    fi
-    # Suffix überschreibt default_backup_prefix, wenn angegeben
+    local -a include_paths=("${backup_paths[@]}")
+    [[ -n "$include_path" ]] && include_paths=("$include_path")
+    [[ ${#include_paths[@]} -eq 0 ]] && include_paths=("/")
     if [[ -n "$backup_suffix" ]]; then
         snapshot_name="$(date +"$borg_backup_name_format" | sed 's/^$(date +%Y-%m-%d)-full//')"
         if [[ "$borg_backup_name_format" == *'%'* ]]; then
@@ -172,14 +165,22 @@ backup_create() {
         fi
         if [[ -n "${heartbeat_success_url:-}" ]]; then
             debug_msg "curl -sS \"${heartbeat_success_url}\""
-            curl -sS "${heartbeat_success_url}" >/dev/null || true
+            if curl -sS "${heartbeat_success_url}" >/dev/null; then
+                log_status "[${GREEN}✓${NC}] Sending heartbeat" 1
+            else
+                log_status "[${RED}✗${NC}] Sending heartbeat" 1
+            fi
         fi
         rm -f "$report_file"
     else
         log_status "[${RED}✗${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
         if [[ -n "${heartbeat_failure_url:-}" ]]; then
             debug_msg "curl -sS \"${heartbeat_failure_url}\""
-            curl -sS "${heartbeat_failure_url}" >/dev/null || true
+            if curl -sS "${heartbeat_failure_url}" >/dev/null; then
+                log_status "[${GREEN}✓${NC}] Sending heartbeat" 1
+            else
+                log_status "[${RED}✗${NC}] Sending heartbeat" 1
+            fi
         fi
         exit 2
     fi
@@ -197,52 +198,56 @@ backup_delete() {
     local msg="[ ] Deleting backup $archive_name"
     log_status "$msg"
     debug_msg "borg delete -v ${repo_path}::${archive_name}"
+    local mailfile
+    mailfile=$(tempfile)
+    # Info vor dem Löschen
+    echo "----- Repository Info BEFORE deletion -----" >> "$mailfile"
+    echo "Backup to be deleted: ${archive_name}" >> "$mailfile"
+    borg info "$repo_path" >> "$mailfile"
+    echo >> "$mailfile"
+    # Löschen
     borg delete -v "${repo_path}::${archive_name}"
     local rc=$?
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Deleting backup $archive_name" 1
+        # Info nach dem Löschen
+        echo "----- Repository Info AFTER deletion -----" >> "$mailfile"
+        borg info "$repo_path" >> "$mailfile"
         if [[ -n "${mail_recipient:-}" ]]; then
             local subject="$(hostname) backup deleted - [${archive_name}]"
-            local mailfile
-            mailfile=$(tempfile)
-            echo "Backup deleted: ${archive_name}" > "$mailfile"
-            debug_msg "borg info $repo_path >> $mailfile"
-            borg info "$repo_path" >> "$mailfile"
             debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
             mail -s "$subject" "${mail_recipient}" < "$mailfile"
-            rm -f "$mailfile"
         fi
     else
         log_status "[${RED}✗${NC}] Deleting backup $archive_name" 1
         exit 2
     fi
+    rm -f "$mailfile"
 }
 
 backup_list_and_mail() {
     set_variables "full"
     debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo2_name:-}"
+    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Listing all backups"
-    log_status "$msg"
+    log_status "$msg" 1
     local mailfile
     mailfile=$(tempfile)
-    debug_msg "borg list $repo_path | tee $mailfile"
-    # Temporärer Dateiinhalt zur Fehlerprüfung
+    debug_msg "borg list $repo_path > $mailfile"
     borg list "$repo_path" > "$mailfile" 2>&1
     local rc=$?
+    cat "$mailfile"
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Listing all backups" 1
         if [[ -n "${mail_recipient:-}" ]]; then
+            log_status "[${GREEN}✓${NC}] Sending E-Mail notification (${mail_recipient})" 1
             local subject="$(hostname) backup list - [${repo_name}]"
             debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
             mail -s "$subject" "${mail_recipient}" < "$mailfile"
         fi
     else
         log_status "[${RED}✗${NC}] Listing all backups" 1
-        # Keine E-Mail bei Fehler
     fi
-    # Debug: Ausgabe der Liste auf die Konsole, egal ob Fehler oder nicht
-    cat "$mailfile"
     rm -f "$mailfile"
 }
 
@@ -333,16 +338,16 @@ repo_lock_check() {
     set_variables "full"
     debug_msg "snapshot_name=${snapshot_name}"
     debug_msg "repo_name=${repo_name:-}"
-    local msg="[ ] Lock check"
+    local msg="[ ] Checking for lock"
     log_status "$msg"
     debug_msg "borg info \"$repo_path\""
     local repostatus
     repostatus=$(borg info "$repo_path" 2>&1)
     if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
-        log_status "[${RED}✗${NC}] Lock check" 1
+        log_status "[${RED}✗${NC}] Checking for lock" 1
         return 1
     fi
-    log_status "[${GREEN}✓${NC}] Lock check" 1
+    log_status "[${GREEN}✓${NC}] Checking for lock" 1
     return 0
 }
 
@@ -363,19 +368,73 @@ repo_lock_break() {
     fi
 }
 
-# --- Self-update placeholder ---
-script_self_update() {
-    local msg="[ ] Performing self-update"
-    log_status "$msg"
-    sleep 2
-    log_status "[${GREEN}✓${NC}] Performing self-update" 1
+# --- Self-update functions ---
+run_self_update() {
+    self=${1}
+    update_base=${2}
+    log_status "[ ] Performing self-update"
+    debug_msg "wget --quiet --output-document=${0}.tmp ${update_base}/${self}"
+    if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}"; then
+        log_status "[${RED}✗${NC}] Failed: Error while trying to wget new version!" 1
+        exit 1
+    fi
+    debug_msg "wget --quiet --output-document=${0}.md5 ${update_base}${self}.md5"
+    if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5"; then
+        log_status "[${RED}✗${NC}] Failed: Error while trying to wget md5sum!" 1
+        exit 1
+    fi
+    local web_md5=$(awk '{print $1}' < "${0}.md5")
+    local local_md5=$(md5sum "$(realpath "${0}.tmp")" | awk '{print $1}')
+    if [[ "$web_md5" != "$local_md5" ]]; then
+        log_status "[${RED}✗${NC}] Failed: MD5 mismatch! Aborting." 1
+        rm "${0}.md5"
+        exit 1
+    fi
+    rm "${0}.md5"
+    local octal_mode=$(stat -c '%a' "$(realpath "${0}")")
+    if ! chmod "$octal_mode" "${0}.tmp"; then
+        log_status "[${RED}✗${NC}] Failed: Error while trying to set mode on ${0}.tmp." 1
+        exit 1
+    fi
+    cat > updateScript.sh <<EOF
+#!/bin/bash
+if mv "${0}.tmp" "${0}"; then
+  echo "Done. Update complete."
+  rm \${0}
+else
+  echo "Failed. Please try again!"
+  rm \${0}
+fi
+EOF
+    debug_msg "Starting update process..."
+    exec /bin/bash updateScript.sh
+}
+
+check_self_update() {
+    self=$(basename "${0}")
+    local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+    local myself_web_version
+    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})")
+    log_status "Web version: ${myself_web_version}" 1
+    myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
+    log_status "Local version: ${myself_local_version}" 1
+    if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+        log_status "${YELLOW}New version (v.${myself_local_version} -> v.${myself_web_version}) available.${NC}" 1
+        read -p "Update (y/N) " -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            run_self_update "${self}" "${update_base}"
+        fi
+    else
+        log_status "No update available (v.${myself_local_version})" 1
+    fi
 }
 
 # --- Help ---
 show_help() {
 cat <<EOF
 Usage:
-  $0 [commands] <backup|repo> <subcommand> [Arguments...]
+  $0 [OPTION] <backup|repo> <subcommand> [Arguments...]
 
 Commands:
   backup create <path> <suffix>    Create backup (optional path and suffix)
@@ -417,7 +476,7 @@ if [[ $# -eq 0 || "$1" == "--help" ]]; then
 fi
 
 if [[ "$1" == "-u" ]]; then
-    script_self_update
+    check_self_update
     exit 0
 fi
 
