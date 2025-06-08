@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250608.14
+# Version=20250608.16
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -104,7 +104,7 @@ set_variables() {
         export BORG_RSH="ssh -p ${ssh_remote_port} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
         temp=$(tempfile)
         variables_initialized=true
-        log_status "[${GREEN}✓${NC}] Setting variables" 1
+        log_status "[${GREEN}✓${NC}] Variables set for backup job [${job_name}]" 1
         debug_msg "BORG_RSH=${BORG_RSH}"
         debug_msg "temp=${temp}"
     fi
@@ -115,8 +115,10 @@ set_variables() {
         snapshot_name=$(eval echo "$borg_backup_name_format")
     fi
     if [[ -n "${default_backup_prefix:-}" ]]; then
-        snapshot2_name="${snapshot_name}_${default_backup_prefix}"
+        snapshot_name="${snapshot_name}_${default_backup_prefix}"
     fi
+    debug_msg "snapshot_name=${snapshot_name}"
+    debug_msg "repo_name=${repo_name:-}"
 }
 
 repo_name=$(eval echo "${borg_repo_name_format:-}")
@@ -131,8 +133,6 @@ backup_create() {
     local include_path="${1:-}"
     local backup_suffix="${2:-}"
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     repo_lock_check || exit 2
     local msg="[ ] Creating backup"
     log_status "$msg" 1
@@ -189,8 +189,6 @@ backup_create() {
 backup_delete() {
     local archive_name="$1"
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     if [[ -z "$archive_name" ]]; then
         log_status "[${RED}✗${NC}] No archive name specified for deletion!" 1
         exit 2
@@ -200,17 +198,14 @@ backup_delete() {
     debug_msg "borg delete -v ${repo_path}::${archive_name}"
     local mailfile
     mailfile=$(tempfile)
-    # Info vor dem Löschen
     echo "----- Repository Info BEFORE deletion -----" >> "$mailfile"
     echo "Backup to be deleted: ${archive_name}" >> "$mailfile"
     borg info "$repo_path" >> "$mailfile"
     echo >> "$mailfile"
-    # Löschen
     borg delete -v "${repo_path}::${archive_name}"
     local rc=$?
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Deleting backup $archive_name" 1
-        # Info nach dem Löschen
         echo "----- Repository Info AFTER deletion -----" >> "$mailfile"
         borg info "$repo_path" >> "$mailfile"
         if [[ -n "${mail_recipient:-}" ]]; then
@@ -227,20 +222,18 @@ backup_delete() {
 
 backup_list_and_mail() {
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Listing all backups"
     log_status "$msg" 1
     local mailfile
     mailfile=$(tempfile)
-    debug_msg "borg list $repo_path > $mailfile"
+    debug_msg "borg list $repo2_path > $mailfile"
     borg list "$repo_path" > "$mailfile" 2>&1
     local rc=$?
     cat "$mailfile"
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Listing all backups" 1
         if [[ -n "${mail_recipient:-}" ]]; then
-            log_status "[${GREEN}✓${NC}] Sending E-Mail notification (${mail_recipient})" 1
+            log_status "[${GREEN}✓${NC}] E-Mail notification send to ${mail_recipient}" 1
             local subject="$(hostname) backup list - [${repo_name}]"
             debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
             mail -s "$subject" "${mail_recipient}" < "$mailfile"
@@ -255,8 +248,6 @@ backup_mount() {
     local archive="${1:-}"
     local mountpoint="${2:-${borg_mount_point:-/mnt/borgbackup_mount}}"
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     local msg
     if [[ -n "$archive" ]]; then
         msg="[ ] Mounting archive $archive"
@@ -285,8 +276,6 @@ backup_mount() {
 # --- Repo functions ---
 repo_init() {
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Initializing repository"
     log_status "$msg"
     debug_msg "borg init -e repokey \"$repo_path\""
@@ -300,10 +289,21 @@ repo_init() {
     fi
 }
 
+repo_info() {
+    set_variables "full"
+    local msg="[ ] Retrieving repository info"
+    log_status "$msg" 1
+    borg info "$repo_path"
+    local rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Retrieving repository info" 1
+    else
+        log_status "[${RED}✗${NC}] Retrieving repository info" 1
+    fi
+}
+
 repo_health_check() {
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Checking repository health"
     log_status "$msg"
     debug_msg "borg check \"$repo_path\""
@@ -319,15 +319,34 @@ repo_health_check() {
 
 repo_compact() {
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
-    local msg="[ ] Compacting repository"
+    local msg="[ ] Pruning old backups"
     log_status "$msg" 1
-    debug_msg "borg compact --progress --threshold ${borg_compact_threshold:-10} \"$repo_path\""
-    borg compact --progress --threshold "${borg_compact_threshold:-10}" "$repo_path"
+    run_cmd borg prune "$repo_path" -v --list \
+        --keep-within="${borg_keep_within:-6m}" \
+        --keep-daily="${borg_keep_daily:-7}" \
+        --keep-weekly="${borg_keep_weekly:-12}" \
+        --keep-monthly="${borg_keep_monthly:-12}" \
+        --keep-yearly="${borg_keep_yearly:-3}"
     local rc=$?
     if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}✓${NC}] Pruning old backups" 1
+    else
+        log_status "[${RED}✗${NC}] Pruning old backups" 1
+        exit 2
+    fi
+
+    log_status "[ ] Compacting repository" 1
+    local threshold="${borg_compact_threshold:-10}"
+    debug_msg "Using compaction threshold: ${threshold}%"
+    run_cmd borg compact "$repo_path" -v --threshold "$threshold" --progress
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Compacting repository" 1
+        if [[ "$debug" == "1" ]]; then
+            local repo_info
+            repo_info=$(borg info "$repo_path")
+            debug_msg "Repository status after compaction:\n${repo_info}"
+        fi
     else
         log_status "[${RED}✗${NC}] Compacting repository" 1
         exit 2
@@ -336,8 +355,6 @@ repo_compact() {
 
 repo_lock_check() {
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Checking for lock"
     log_status "$msg"
     debug_msg "borg info \"$repo_path\""
@@ -353,8 +370,6 @@ repo_lock_check() {
 
 repo_lock_break() {
     set_variables "full"
-    debug_msg "snapshot_name=${snapshot_name}"
-    debug_msg "repo_name=${repo_name:-}"
     local msg="[ ] Breaking repository lock"
     log_status "$msg"
     debug_msg "borg break-lock \"$repo_path\""
@@ -370,12 +385,12 @@ repo_lock_break() {
 
 # --- Self-update functions ---
 run_self_update() {
-    self=${1}
+    self=$(basename "${0}")
     update_base=${2}
-    log_status "[ ] Performing self-update" 0  # Kein Zeilenumbruch, überschreibbar
+    log_status "[ ] Performing self-update" 0
     debug_msg "wget --quiet --output-document=${0}.tmp ${update_base}/${self}"
     if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}"; then
-        log_status "[${RED}✗${NC}] Performing self-update" 1  # Bei Fehler: Zeilenumbruch, damit die Fehlermeldung sichtbar bleibt
+        log_status "[${RED}✗${NC}] Performing self-update" 1
         exit 1
     fi
     debug_msg "wget --quiet --output-document=${0}.md5 ${update_base}${self}.md5"
@@ -397,7 +412,6 @@ run_self_update() {
         log_status "[${RED}✗${NC}] Performing self-update" 1
         exit 1
     fi
-    # Nach allen Prüfungen: Statuszeile mit grüner Checkbox, ohne Zeilenumbruch
     log_status "[${GREEN}✓${NC}] Performing self-update" 0
     cat > updateScript.sh <<EOF
 #!/bin/bash
@@ -410,7 +424,6 @@ fi
 EOF
     debug_msg "Starting update process..."
     exec /bin/bash updateScript.sh
-    # Hinweis: Die Zeile nach exec wird nie erreicht!
 }
 
 check_self_update() {
@@ -422,8 +435,8 @@ check_self_update() {
     myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
     log_status "Local version: ${myself_local_version}" 1
     if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
-        log_status "${YELLOW}New version (v.${myself_local_version} -> v.${myself_web_version}) available.${NC}" 1
-        read -p "Update (y/N) " -r
+        log_status "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}" 1
+        read -p "Update [y/N] " -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             run_self_update "${self}" "${update_base}"
@@ -446,8 +459,9 @@ Commands:
   backup mount <archive> <path>    Mount backup/repository (optional archive and path)
 
   repo init                        Initialize repository
+  repo info                        Show repository info
   repo health-check                Check repository health
-  repo compact                     Compact repository
+  repo compact                     Compact repository (prune + compact)
   repo lock-check                  Check for locks
   repo lock-break                  Break lock
 
@@ -460,6 +474,8 @@ Examples:
   $0 backup create /home
   $0 backup create /home custom_suffix
   $0 repo init
+  $0 repo info
+  $0 repo compact
   $0 backup mount 2025-06-08_14-30_custom
   $0 backup mount 2025-06-08_14-30_custom /mnt/my_mountpoint
 
@@ -496,6 +512,7 @@ case "$1" in
     repo)
         case "$2" in
             init)         shift 2; repo_init "$@" ;;
+            info)         shift 2; repo_info "$@" ;;
             health-check) shift 2; repo_health_check "$@" ;;
             compact)      shift 2; repo_compact "$@" ;;
             lock-check)   shift 2; repo_lock_check "$@" ;;
