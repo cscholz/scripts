@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250609.01
+# Version=20250609.02
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -153,7 +153,7 @@ backup_create() {
     borg create "${borg_create_opts[@]}" --stats --progress "${repo_path}::${snapshot_name}" "${include_paths[@]}"
     local rc=$?
     if [[ $rc -eq 0 ]]; then
-        log_status "[${GREEN}✓${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
+        log_status "[${GREEN}✓${NC}] Creating backup" 1
         local report_file
         report_file=$(tempfile)
         debug_msg "borg info ${repo_path}::${snapshot_name} > $report_file"
