@@ -133,7 +133,7 @@ backup_create() {
     local include_path="${1:-}"
     local backup_suffix="${2:-}"
     set_variables "full"
-    repo_lock_check || exit 2
+#   repo_lock_check || exit 2
     local msg="[ ] Creating backup"
     log_status "$msg" 1
     local borg_create_opts=(--exclude-caches --exclude-nodump --compression "${compression}" "${exclude_args[@]}")
