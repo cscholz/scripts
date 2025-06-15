@@ -104,7 +104,7 @@ set_variables() {
         export BORG_RSH="ssh -p ${ssh_remote_port} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
         temp=$(tempfile)
         variables_initialized=true
-        log_status "[${GREEN}✓${NC}] Variables set for backup job [${job_name}]" 1
+        log_status "[${GREEN}✓${NC}] Setting variables" 1
         debug_msg "BORG_RSH=${BORG_RSH}"
         debug_msg "temp=${temp}"
     fi
@@ -153,7 +153,7 @@ backup_create() {
 
     # Backup durchführen und Output in Variable speichern
     local borg_output
-    borg_output=$(borg create "${borg_create_opts[@]}" --stats --progress "${repo_path}::${snapshot_name}" "${include_paths[@]}" 2>&1)
+    borg_output=$(borg create "${borg_create_opts[@]}" --stats --progress "${repo_path}::${snapshot_name}" "${include_paths[@]}")
     local rc=$?
 
     # Lock-Fehler erkennen
@@ -235,8 +235,8 @@ backup_list_and_mail() {
     log_status "$msg" 1
     local mailfile
     mailfile=$(tempfile)
-    debug_msg "borg list $repo2_path > $mailfile"
-    borg list "$repo2_path" > "$mailfile" 2>&1
+    debug_msg "borg list $repo_path > $mailfile"
+    borg list "$repo_path" > "$mailfile" 2>&1
     local rc=$?
     cat "$mailfile"
     if [[ $rc -eq 0 ]]; then
@@ -327,8 +327,8 @@ repo_health_check() {
     set_variables "full"
     local msg="[ ] Checking repository health"
     log_status "$msg"
-    debug_msg "borg check \"$repo2_path\""
-    borg check "$repo2_path"
+    debug_msg "borg check \"$repo_path\""
+    borg check "$repo_path"
     local rc=$?
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}✓${NC}] Checking repository health" 1
@@ -365,7 +365,7 @@ repo_compact() {
         log_status "[${GREEN}✓${NC}] Compacting repository" 1
         if [[ "$debug" == "1" ]]; then
             local repo_info
-            repo_info=$(borg info "$repo2_path")
+            repo_info=$(borg info "$repo_path")
             debug_msg "Repository status after compaction:\n${repo_info}"
         fi
     else
@@ -380,7 +380,7 @@ repo_lock_check() {
     log_status "$msg"
     debug_msg "borg info \"$repo_path\""
     local repostatus
-    repostatus=$(borg info "$repo2_path" 2>&1)
+    repostatus=$(borg info "$repo_path" 2>&1)
     if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
         log_status "[${RED}✗${NC}] Checking for lock" 1
         return 1
@@ -556,7 +556,7 @@ case "$1" in
     backup)
         case "$2" in
             create)       shift 2; backup_create "$@" ;;
-            delete)       shift 2; backup2_delete "$@" ;;
+            delete)       shift 2; backup_delete "$@" ;;
             list)         shift 2; backup_list_and_mail "$@" ;;
             mount)        shift 2; backup_mount "$@" ;;
             *)            show_help; exit 1 ;;
