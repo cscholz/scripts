@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250615.01
+# Version=20250615.02
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -406,62 +406,75 @@ repo_lock_break() {
 
 # --- Self-update functions ---
 run_self_update() {
-    self=${1}
-    update_base=${2}
-    log_status "[ ] Performing self-update" 1
+    local self="$1"
+    local update_base="$2"
+    local script_path
+    script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+    local script_name
+    script_name=$(basename "$script_path")
+    local script_dir
+    script_dir=$(dirname "$script_path")
 
-    log_status "[ ] Downloading latest version..." 0
-    debug_msg "wget --quiet --output-document=${0}.tmp ${update_base}/${self}"
-    if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}"; then
-        log_status "[${RED}✗${NC}] Downloading latest version" 1
-        log_status "[${RED}✗${NC}] Performing self-update" 1
+    echo "Performing self-update"
+
+    # Download latest version
+    echo -ne "\r[ ] Downloading latest version..."
+    if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}/${self}"; then
+        echo -e "\r[${RED}✗${NC}] Downloading latest version"
+        echo "[${RED}✗${NC}] Performing self-update"
         exit 1
     fi
-    log_status "[${GREEN}✓${NC}] Downloading latest version" 1
+    echo -e "\r[${GREEN}✓${NC}] Downloading latest version"
 
-    log_status "[ ] Downloading md5 sum..." 0
-    debug_msg "wget --quiet --output-document=${0}.md5 ${update_base}${self}.md5"
-    if ! wget --quiet --output-document="${0}.md5" "${update4_base}${self}.md5"; then
-        log_status "[${RED}✗${NC}] Downloading md5 sum" 1
-        log_status "[${RED}✗${NC}] Performing self-update" 1
+    # Download md5 sum
+    echo -ne "\r[ ] Downloading md5 sum..."
+    if ! wget --quiet --output-document="${script_name}.md5" "${update_base}/${self}.md5"; then
+        echo -e "\r[${RED}✗${NC}] Downloading md5 sum"
+        echo "[${RED}✗${NC}] Performing self-update"
         exit 1
     fi
-    log_status "[${GREEN}✓${NC}] Downloading md5 sum" 1
+    echo -e "\r[${GREEN}✓${NC}] Downloading md5 sum"
 
-    log_status "[ ] Checking MD5 sum..." 0
-    local web_md5=$(awk '{print $1}' < "${0}.md5")
-    local local_md5=$(md5sum "$(realpath "${0}.tmp")" | awk '{print $1}')
+    # Check MD5 sum
+    echo -ne "\r[ ] Checking MD5 sum..."
+    local web_md5
+    web_md5=$(awk '{print $1}' < "${script_name}.md5")
+    local local_md5
+    local_md5=$(md5sum "$(realpath "${script_name}.tmp")" | awk '{print $1}')
     if [[ "$web_md5" != "$local_md5" ]]; then
-        log_status "[${RED}✗${NC}] Checking MD5 sum" 1
-        log_status "MD5 mismatch! Web: $web_md5 Local: $local_md5" 1
-        rm "${0}.md5"
-        log_status "[${RED}✗${NC}] Performing self-update" 1
+        echo -e "\r[${RED}✗${NC}] Checking MD5 sum"
+        echo "MD5 mismatch! Web: $web_md5 Local: $local_md5"
+        rm -f "${script_name}.md5"
+        echo "[${RED}✗${NC}] Performing self-update"
         exit 1
     fi
-    log_status "[${GREEN}✓${NC}] Checking MD5 sum" 1
-    rm "${0}.md5"
+    echo -e "\r[${GREEN}✓${NC}] Checking MD5 sum"
+    rm -f "${script_name}.md5"
 
-    log_status "[ ] Copying over modes from old version..." 0
-    local octal_mode=$(stat -c '%a' "$(realpath "${0}")")
-    if ! chmod "$octal_mode" "${0}.tmp"; then
-        log_status "[${RED}✗${NC}] Copying over modes from old version" 1
-        log_status "[${RED}✗${NC}] Performing self-update" 1
+    # Copy over modes from old version
+    echo -ne "\r[ ] Copying over modes from old version..."
+    local octal_mode
+    octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
+    if ! chmod "$octal_mode" "${script_name}.tmp"; then
+        echo -e "\r[${RED}✗${NC}] Copying over modes from old version"
+        echo "[${RED}✗${NC}] Performing self-update"
         exit 1
     fi
-    log_status "[${GREEN}✓${NC}] Copying over modes from old version" 1
+    echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
 
-    log_status "[ ] Start update process..." 0
+    # Start update process
+    echo -ne "\r[ ] Start update process..."
     cat > updateScript.sh <<EOF
 #!/bin/bash
-if mv "$0.tmp" "$0"; then
-    echo "Done. Update complete."
-    rm \${0}
+if mv "${script_name}.tmp" "${script_path}"; then
+    printf "\r\033[0KUpdate complete.\n"
+    rm -f "\${0}"
 else
-    echo "Failed. Please try again!"
-    rm \${0}
+    printf "\r\033[0KUpdate failed. Please try again!\n"
+    rm -f "\${0}"
 fi
 EOF
-    debug_msg "Starting update process..."
+    chmod +x updateScript.sh
     exec /bin/bash updateScript.sh
     # Hinweis: Die Zeile nach exec wird nie erreicht!
 }
