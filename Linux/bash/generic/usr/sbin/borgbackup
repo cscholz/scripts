@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250615.04
+# Version=20250618.01
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -196,37 +196,40 @@ backup_create() {
 }
 
 backup_delete() {
-    local archive_name="$1"
     set_variables "full"
-    if [[ -z "$archive_name" ]]; then
-        log_status "[${RED}✗${NC}] No archive name specified for deletion!" 1
+    if [[ "$#" -eq 0 ]]; then
+        log_status "[${RED}✗${NC}] No archive name(s) specified for deletion!" 1
         exit 2
     fi
-    local msg="[ ] Deleting backup $archive_name"
-    log_status "$msg"
-    debug_msg "borg delete -v ${repo_path}::${archive_name}"
-    local mailfile
-    mailfile=$(tempfile)
-    echo "----- Repository Info BEFORE deletion -----" >> "$mailfile"
-    echo "Backup to be deleted: ${archive_name}" >> "$mailfile"
-    borg info "$repo_path" >> "$mailfile"
-    echo >> "$mailfile"
-    borg delete -v "${repo_path}::${archive_name}"
-    local rc=$?
-    if [[ $rc -eq 0 ]]; then
-        log_status "[${GREEN}✓${NC}] Deleting backup $archive_name" 1
-        echo "----- Repository Info AFTER deletion -----" >> "$mailfile"
+
+    for archive_name in "$@"; do
+        local msg="[ ] Deleting backup $archive_name"
+        log_status "$msg"
+        debug_msg "borg delete -v ${repo_path}::${archive_name}"
+        local mailfile
+        mailfile=$(tempfile)
+        echo "----- Repository Info BEFORE deletion -----" >> "$mailfile"
+        echo "Backup to be deleted: ${archive_name}" >> "$mailfile"
         borg info "$repo_path" >> "$mailfile"
-        if [[ -n "${mail_recipient:-}" ]]; then
-            local subject="$(hostname) backup deleted - [${archive_name}]"
-            debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
-            mail -s "$subject" "${mail_recipient}" < "$mailfile"
+        echo >> "$mailfile"
+        borg delete -v "${repo_path}::${archive_name}"
+        local rc=$?
+        if [[ $rc -eq 0 ]]; then
+            log_status "[${GREEN}✓${NC}] Deleting backup $archive_name" 1
+            echo "----- Repository Info AFTER deletion -----" >> "$mailfile"
+            borg info "$repo_path" >> "$mailfile"
+            if [[ -n "${mail_recipient:-}" ]]; then
+                local subject="$(hostname) backup deleted - [${archive_name}]"
+                debug_msg "mail -s \"$subject\" \"${mail_recipient}\" < \"$mailfile\""
+                mail -s "$subject" "${mail_recipient}" < "$mailfile"
+            fi
+        else
+            log_status "[${RED}✗${NC}] Deleting backup $archive_name" 1
+            rm -f "$mailfile"
+            exit 2
         fi
-    else
-        log_status "[${RED}✗${NC}] Deleting backup $archive_name" 1
-        exit 2
-    fi
-    rm -f "$mailfile"
+        rm -f "$mailfile"
+    done
 }
 
 backup_list_and_mail() {
@@ -505,19 +508,18 @@ show_help() {
     echo "  $0 [OPTION] <backup|repo> <subcommand> [Arguments...]"
     echo
     echo -e "\033[1m\033[4m2. Commands:\033[0m"
-    echo "  backup create <path> <suffix>    Create backup (optional path and suffix)"
-    echo "  backup delete <archive>          Delete backup"
-    echo "  backup list                      List backups"
-    echo "  backup mount <archive> <path>    Mount backup/repository (optional archive and path)"
-    echo "                                   Default mount point: ${borg_mount_point:-/mnt/borgbackup_mount}"
-    echo "                                   (Set via borg_mount_point in config)"
+    echo "  backup create <path> <suffix>      Create backup (optional path and suffix)"
+    echo "  backup delete <arc_1> <arc_2> ...  Delete backup"
+    echo "  backup list                        List backups"
+    echo "  backup mount <archive> <path>      Mount repository to ${borg_mount_point:-/mnt/borgbackup_mount}"
+    echo "                                     Use <archive> for specific one. <path> overrides mount point."
     echo
-    echo "  repo init                        Initialize repository"
-    echo "  repo info                        Show repository info"
-    echo "  repo health-check                Check repository health"
-    echo "  repo compact                     Compact repository (prune + compact)"
-    echo "  repo lock-check                  Check for locks"
-    echo "  repo lock-break                  Break lock"
+    echo "  repo init                          Initialize repository"
+    echo "  repo info                          Show repository info"
+    echo "  repo health-check                  Check repository health"
+    echo "  repo compact                       Compact repository (prune + compact)"
+    echo "  repo lock-check                    Check for locks"
+    echo "  repo lock-break                    Break lock"
     echo
     echo -e "\033[1m\033[4m3. Options:\033[0m"
     echo "  -v      Debug mode (show commands and variables in yellow)"
