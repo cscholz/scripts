@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250625.01
+# Version=20250625.02
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -408,38 +408,36 @@ repo_lock_break() {
 }
 
 # --- Self-update functions ---
+# --- Self-update functions ---
 run_self_update() {
-    check_wget
     local self="$1"
     local update_base="$2"
     local script_path
     script_path=$(realpath "$0" 2>/dev/null || echo "$0")
     local script_name
     script_name=$(basename "$script_path")
-    local script_dir
-    script_dir=$(dirname "$script_path")
 
     echo "Performing self-update"
 
     # Download latest version
     echo -ne "\r[ ] Downloading latest version..."
     if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}/${self}"; then
-        echo -e "\r${RED}${BOLD}[✗]${NOBOLD} Downloading latest version${NC}"
-        echo -e "${RED}${BOLD}[✗]${NOBOLD} Performing self-update${NC}"
+        echo -e "\r[${RED}✗${NC}] Downloading latest version"
+        echo "[${RED}✗${NC}] Performing self-update"
         exit 1
     fi
-    echo -e "\r${GREEN}${BOLD}[✓]${NOBOLD} Downloading latest version${NC}"
+    echo -e "\r[${GREEN}✓${NC}] Downloading latest version"
 
     # Copy over modes from old version
     echo -ne "\r[ ] Copying over modes from old version..."
     local octal_mode
     octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
     if ! chmod "$octal_mode" "${script_name}.tmp"; then
-        echo -e "\r${RED}${BOLD}[✗]${NOBOLD} Copying over modes from old version${NC}"
-        echo -e "${RED}${BOLD}[✗]${NOBOLD} Performing self-update${NC}"
+        echo -e "\r[${RED}✗${NC}] Copying over modes from old version"
+        echo "[${RED}✗${NC}] Performing self-update"
         exit 1
     fi
-    echo -e "\r${GREEN}${BOLD}[✓]${NOBOLD} Copying over modes from old version${NC}"
+    echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
 
     # Start update process
     echo -ne "\r[ ] Start update process..."
@@ -455,29 +453,26 @@ fi
 EOF
     chmod +x updateScript.sh
     exec /bin/bash updateScript.sh
+    # Hinweis: Die Zeile nach exec wird nie erreicht!
 }
 
 check_self_update() {
     self=$(basename "${0}")
     local update_base="${UPDATE_BASE:-https://to_be_set/}"
     local myself_web_version
-    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
-    if [ -z "$myself_web_version" ]; then
-        echo -e "[${RED}${BOLD}x${NC}${NOBOLD}] No online version found for ${self} at ${update_base}${self}."
-        exit 1
-    fi
-    echo "Web version: ${myself_web_version}"
+    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})")
+    log_status "Web version: ${myself_web_version}" 1
     myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
-    echo "Local version: ${myself_local_version}"
-    if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
-        echo -e "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}"
+    log_status "Local version: ${myself_local_version}" 1
+    if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
+        log_status "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}" 1
         read -p "Update [y/N] " -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             run_self_update "${self}" "${update_base}"
         fi
     else
-        echo "No update available: v.${myself_local_version}"
+        log_status "No update available: v.${myself_local_version}" 1
     fi
 }
 
