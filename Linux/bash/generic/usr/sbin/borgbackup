@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20250618.01
+# Version=20250625.01
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -409,6 +409,7 @@ repo_lock_break() {
 
 # --- Self-update functions ---
 run_self_update() {
+    check_wget
     local self="$1"
     local update_base="$2"
     local script_path
@@ -423,47 +424,22 @@ run_self_update() {
     # Download latest version
     echo -ne "\r[ ] Downloading latest version..."
     if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}/${self}"; then
-        echo -e "\r[${RED}✗${NC}] Downloading latest version"
-        echo "[${RED}✗${NC}] Performing self-update"
+        echo -e "\r${RED}${BOLD}[✗]${NOBOLD} Downloading latest version${NC}"
+        echo -e "${RED}${BOLD}[✗]${NOBOLD} Performing self-update${NC}"
         exit 1
     fi
-    echo -e "\r[${GREEN}✓${NC}] Downloading latest version"
-
-    # Download md5 sum
-    echo -ne "\r[ ] Downloading md5 sum..."
-    if ! wget --quiet --output-document="${script_name}.md5" "${update_base}/${self}.md5"; then
-        echo -e "\r[${RED}✗${NC}] Downloading md5 sum"
-        echo "[${RED}✗${NC}] Performing self-update"
-        exit 1
-    fi
-    echo -e "\r[${GREEN}✓${NC}] Downloading md5 sum"
-
-    # Check MD5 sum
-    echo -ne "\r[ ] Checking MD5 sum..."
-    local web_md5
-    web_md5=$(awk '{print $1}' < "${script_name}.md5")
-    local local_md5
-    local_md5=$(md5sum "$(realpath "${script_name}.tmp")" | awk '{print $1}')
-    if [[ "$web_md5" != "$local_md5" ]]; then
-        echo -e "\r[${RED}✗${NC}] Checking MD5 sum"
-        echo "MD5 mismatch! Web: $web_md5 Local: $local_md5"
-        rm -f "${script_name}.md5"
-        echo "[${RED}✗${NC}] Performing self-update"
-        exit 1
-    fi
-    echo -e "\r[${GREEN}✓${NC}] Checking MD5 sum"
-    rm -f "${script_name}.md5"
+    echo -e "\r${GREEN}${BOLD}[✓]${NOBOLD} Downloading latest version${NC}"
 
     # Copy over modes from old version
     echo -ne "\r[ ] Copying over modes from old version..."
     local octal_mode
     octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
     if ! chmod "$octal_mode" "${script_name}.tmp"; then
-        echo -e "\r[${RED}✗${NC}] Copying over modes from old version"
-        echo "[${RED}✗${NC}] Performing self-update"
+        echo -e "\r${RED}${BOLD}[✗]${NOBOLD} Copying over modes from old version${NC}"
+        echo -e "${RED}${BOLD}[✗]${NOBOLD} Performing self-update${NC}"
         exit 1
     fi
-    echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
+    echo -e "\r${GREEN}${BOLD}[✓]${NOBOLD} Copying over modes from old version${NC}"
 
     # Start update process
     echo -ne "\r[ ] Start update process..."
@@ -479,26 +455,29 @@ fi
 EOF
     chmod +x updateScript.sh
     exec /bin/bash updateScript.sh
-    # Hinweis: Die Zeile nach exec wird nie erreicht!
 }
 
 check_self_update() {
     self=$(basename "${0}")
-    local update_base=https://raw2.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+    local update_base="${UPDATE_BASE:-https://to_be_set/}"
     local myself_web_version
-    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})")
-    log_status "Web version: ${myself_web_version}" 1
+    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
+    if [ -z "$myself_web_version" ]; then
+        echo -e "[${RED}${BOLD}x${NC}${NOBOLD}] No online version found for ${self} at ${update_base}${self}."
+        exit 1
+    fi
+    echo "Web version: ${myself_web_version}"
     myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
-    log_status "Local version: ${myself_local_version}" 1
-    if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
-        log_status "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}" 1
+    echo "Local version: ${myself_local_version}"
+    if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
+        echo -e "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}"
         read -p "Update [y/N] " -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             run_self_update "${self}" "${update_base}"
         fi
     else
-        log_status "No update available: v.${myself_local_version}" 1
+        echo "No update available: v.${myself_local_version}"
     fi
 }
 
