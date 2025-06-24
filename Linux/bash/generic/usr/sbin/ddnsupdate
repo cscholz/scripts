@@ -432,7 +432,7 @@ EOF
 
 check_self_update() {
     self=$(basename "${0}")
-    local update_base=https://raw2.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+    local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
     local myself_web_version
     myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
     if [ -z "$myself_web_version" ]; then
