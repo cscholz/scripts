@@ -1,0 +1,581 @@
+#!/bin/bash
+Version=20240624.21
+
+set -eo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+BOLD='\033[1m'
+NOBOLD='\033[0m'
+
+CHECKMARK="✓"
+CROSSMARK="✗"
+
+# Default values
+dns_server=""
+dns_key=""
+ip_detect_url="https://api.ipify.org"
+record_type="A"
+ttl="3600"
+dns_class="IN"
+ip_version="ipv4"
+use_public_ip_target=0
+debug_mode=0
+target_value=""
+update=0
+pre_update_cmd=""
+auto_overwrite_existing_records="n"  # Default: n (no/nein)
+
+CONFIG_FILE="/etc/ddnsupdate.conf"
+USER_CONFIG="$HOME/.config/ddnsupdate.conf"
+
+# 1. Load global, then user config (user overrides global)
+if [ -f "$CONFIG_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+if [ -f "$USER_CONFIG" ]; then
+  # shellcheck disable=SC1090
+  source "$USER_CONFIG"
+fi
+
+print_aligned() {
+  local key="$1"
+  local value="$2"
+  printf "%-15s %s\n" "$key:" "$value"
+}
+
+debug() {
+  if [ "$debug_mode" = "1" ]; then
+    echo -e "${YELLOW}> $*${NC}"
+  fi
+}
+
+check_key_permissions() {
+  local keyfile="$1"
+  if [ ! -f "$keyfile" ]; then
+    echo -e "${RED}Key file does not exist: $keyfile${NC}"
+    exit 1
+  fi
+  local perms
+  perms=$(stat -c "%a" "$keyfile")
+  if [ "$perms" != "600" ]; then
+    echo -e "${RED}Key file $keyfile must have permissions 0600 (current: $perms). No updates performed!${NC}"
+    exit 1
+  fi
+}
+
+check_curl() {
+  if ! command -v curl >/dev/null; then
+    echo -e "${RED}Package \"curl\" not found!${NC}"
+    echo -e "Install with: apt-get install curl"
+    exit 1
+  fi
+}
+
+check_dig() {
+  if ! command -v dig >/dev/null; then
+    echo -e "${RED}Package \"dnsutils\" (dig) not found!${NC}"
+    echo -e "Install with: apt-get install dnsutils"
+    exit 1
+  fi
+}
+
+check_wget() {
+  if ! command -v wget >/dev/null; then
+    echo -e "${RED}Package \"wget\" not found!${NC}"
+    echo -e "Install with: apt-get install wget"
+    exit 1
+  fi
+}
+
+usage() {
+  echo "1. Usage:"
+  echo "   ddnsupdate [PARAMETER] <command> [Arguments...]"
+  echo
+  echo "2. Commands:"
+  echo "   add <Record Name> <Zone>                 Add or update a DNS record (see parameters for type, TTL, etc.)"
+  echo "   del <Record Name> <Zone>                 Delete a DNS record"
+  echo "   check <Record Name> <Zone>               Show DNS record and TXT record for a name"
+  echo "   -listzone <Zone>                         List all records of a DNS zone (zone transfer/AXFR)"
+  echo "                                            Note: Only possible if the DNS server allows AXFR for your client IP."
+  echo
+  echo "3. Parameter:"
+  echo "   -dns-server <server>      DNS server to use (default from config)"
+  echo "   -key <keyfile>            Path to nsupdate key (default from config)"
+  echo "   -ip-detect <url>          URL to retrieve public IP (default: https://api.ipify.org)"
+  echo "   -type <recordtype>        DNS record type (A, AAAA, MX, NS, TXT, etc.; default: A)"
+  echo "   -ttl <seconds>            TTL for the record (default: 3600)"
+  echo "   -class <class>            DNS class (default: IN)"
+  echo "   -ipv4                     Use IPv4 (default)"
+  echo "   -ipv6                     Use IPv6"
+  echo "   -target-public-ip         Use your current public IP as the target value (A/AAAA)"
+  echo "   -target <value>           Set target value for record (e.g. for MX, NS, TXT, CNAME, SRV, PTR)"
+  echo "   -v                        Debug mode (show commands and variables in yellow)"
+  echo "   -u                        Self-update"
+  echo "   -y                        Automatically overwrite existing records (default: n)"
+  echo "   --help                    Show this help"
+  echo
+  echo "4. Config:"
+  echo "   The script reads configuration from:"
+  echo "   - /etc/ddnsupdate.conf (global, system-wide)"
+  echo "   - ~/.config/ddnsupdate.conf (user-specific)"
+  echo
+  echo "   User config overrides global config."
+  echo "   CLI parameters override both config files."
+  echo
+  echo "5. Examples:"
+  echo "   1) dynip.example.com. 3600 IN A 203.0.113.42"
+  echo "      \$ ddnsupdate add dynip example.com"
+  echo
+  echo "   2) example.sclz.eu. 60 IN A 198.51.100.42"
+  echo "      \$ ddnsupdate add example sclz.eu -target-public-ip -ttl 60"
+  echo
+  echo "   3) example.sclz.eu. 3600 IN TXT \"v=spf1 include:_spf.example.com ~all\""
+  echo "      \$ ddnsupdate add example sclz.eu -type TXT -target '\"v=spf1 include:_spf.example.com ~all\"'"
+  echo
+  echo "   4) www.sclz.eu. 3600 IN CNAME example.com."
+  echo "      \$ ddnsupdate add www sclz.eu -type CNAME -ttl 3600 -class IN -dns-server mx02.o-o-s.de -key /root/scripts/ddnsupdate.key -target \"example.com.\""
+  echo
+  echo "   5) sclz.eu. 3600 IN MX 10 mail.example.com."
+  echo "      \$ ddnsupdate add @ sclz.eu -type MX -target \"10 mail.example.com.\""
+  echo
+  echo "   6) (Zone-Transfer/AXFR, alle Records anzeigen)"
+  echo "      \$ ddnsupdate -listzone sclz.eu -dns-server mx02.o-o-s.de"
+  exit 1
+}
+
+check_nsupdate() {
+  if ! command -v nsupdate >/dev/null; then
+    echo -e "${RED}Package \"dnsutils\" not found!${NC}"
+    echo -e "Install with: apt-get install dnsutils"
+    exit 1
+  fi
+}
+
+check_record() {
+  check_dig
+  local record="$1"
+  local zone="$2"
+  local fqdn="${record}.${zone}"
+  local type="${record_type}"
+  local server="${dns_server}"
+
+  echo "Checking DNS records for: ${fqdn}"
+  echo "-----------------------------------"
+  print_aligned "$type" "$(dig $type ${fqdn} @${server} +short 2>/dev/null | head -n1 || echo "n/a")"
+  print_aligned "TXT" "$(dig TXT ${fqdn} @${server} +short 2>/dev/null | head -n1 || echo "n/a")"
+  echo "-----------------------------------"
+}
+
+list_zone() {
+  check_dig
+  local zone="$1"
+  local server="${dns_server}"
+  echo "Attempting AXFR zone transfer for: $zone @ $server"
+  echo "Note: This only works if the DNS server allows AXFR for your client IP."
+  debug dig "$zone" "AXFR" "@" "$server"
+  dig "$zone" AXFR @"$server"
+}
+
+dns_add_update() {
+  check_dig
+  local record="$1"
+  local zone="$2"
+  local fqdn="${record}.${zone}."
+  local type="${record_type}"
+  local server="${dns_server}"
+  local key="${dns_key}"
+  local url="${ip_detect_url}"
+  local ttl_val="${ttl}"
+  local class="${dns_class}"
+  local iptype="${ip_version}"
+  local update=0
+
+  if [ -z "$record" ]; then echo "Record missing"; return 1; fi
+  if [ -z "$zone" ]; then echo "Zone missing"; return 1; fi
+
+  if [ -z "$dns_server" ]; then echo "dns_server missing"; return 1; fi
+  if [ -z "$dns_key" ]; then echo "dns_key missing"; return 1; fi
+
+  check_key_permissions "$key"
+
+  # Prüfe ob curl benötigt wird
+  if [[ "$use_public_ip_target" -eq 1 || "$type" == "A" || "$type" == "AAAA" ]]; then
+    check_curl
+  fi
+
+  # Target bestimmen
+  local value=""
+  if [ -n "$target_value" ]; then
+    value="$target_value"
+  elif [[ "$use_public_ip_target" -eq 1 || "$type" == "A" || "$type" == "AAAA" ]]; then
+    if [ "$type" = "AAAA" ] || [ "$iptype" = "ipv6" ]; then
+      IPvX="6"
+    else
+      IPvX="4"
+    fi
+    debug curl --connect-timeout 2 -${IPvX} --silent -f "${url}"
+    ip=$(curl --connect-timeout 2 -${IPvX} --silent -f "${url}")
+    print_aligned "Public IPv${IPvX}" "$ip"
+    if [ -z "${ip}" ]; then
+      echo "Could not determine public IP. No internet connection?"
+      logger -t "ddnsupdate" "Could not determine public IP. No internet connection?"
+      return 1
+    fi
+    value="$ip"
+  fi
+
+  echo "-----------------------------------------"
+  print_aligned "DNS Zone"       "$zone"
+  print_aligned "Record"         "$record"
+  print_aligned "Type"           "$type"
+  print_aligned "Class"          "$class"
+  print_aligned "Target"         "$value"
+  print_aligned "TTL"            "$ttl_val"
+  print_aligned "FQDN"           "$fqdn"
+  echo "-----------------------------------------"
+
+  debug dig "$type" "${fqdn%?}" "@" "$server" "+short"
+  DNS_VAL=$(dig "$type" "${fqdn%?}" @"$server" +short 2>/dev/null || true)
+
+  # Prüfe, ob Ziel-IP mit alter IP identisch ist
+  if [ "${DNS_VAL}" = "${value}" ] && [ -n "${DNS_VAL}" ]; then
+    echo "[-] Same target; not updated"
+    return 0
+  fi
+
+  # Existiert der Record bereits?
+  if [ -n "${DNS_VAL}" ]; then
+    if [ "$auto_overwrite_existing_records" = "y" ]; then
+      echo -e "${BOLD}[✓]${NOBOLD} Automatically overwriting existing record."
+      commands="server ${server}\nzone ${zone}\n"
+      commands="${commands}update delete ${fqdn%?} ${class} ${type}\n"
+      commands="${commands}send\n"
+      debug echo -e "${commands}" "| /usr/bin/nsupdate -k ${key}"
+      echo -e "${commands}" | /usr/bin/nsupdate -k "${key}"
+      update=1
+    else
+      echo -en "${YELLOW}${BOLD}[?]${NOBOLD}${YELLOW}${NC} "
+      read -p "Delete existing record before adding new one? (y/N) " -r
+      if [[ $REPLY =~ ^[Yy]$ ]]; then
+        commands="server ${server}\nzone ${zone}\n"
+        commands="${commands}update delete ${fqdn%?} ${class} ${type}\n"
+        commands="${commands}send\n"
+        debug echo -e "${commands}" "| /usr/bin/nsupdate -k ${key}"
+        echo -e "${commands}" | /usr/bin/nsupdate -k "${key}"
+        update=1
+      else
+        return 0
+      fi
+    fi
+  fi
+
+  # Wenn value leer, Standardwert je nach Typ
+  if [[ -z "$value" ]]; then
+    case "$type" in
+      MX)
+        value="10 mail.${zone}."
+        ;;
+      NS)
+        value="ns1.${zone}."
+        ;;
+      TXT)
+        value="\"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\""
+        ;;
+      CNAME)
+        value="${zone}."
+        ;;
+      SRV)
+        value="10 60 5060 sipserver.${zone}."
+        ;;
+      PTR)
+        value="${zone}."
+        ;;
+      *)
+        value="$ip"
+        ;;
+    esac
+  fi
+
+  if [ "${DNS_VAL}" != "${value}" ] || [ "${update}" -eq 1 ]; then
+    logger -t "ddnsupdate" "Update required. (DNS=${DNS_VAL}, IP=${ip})"
+    ${pre_update_cmd}
+
+    commands="server ${server}\nzone ${zone}\n"
+    commands="${commands}update delete ${fqdn%?} ${class} ${type}\n"
+    commands="${commands}update add ${fqdn%?} ${ttl_val} ${class} ${type} ${value}\n"
+    # TXT-Record nur bei -target-public-ip setzen
+    if [ "${use_public_ip_target}" -eq 1 ]; then
+      commands="${commands}update delete ${fqdn%?} ${class} TXT\n"
+      commands="${commands}update add ${fqdn%?} ${ttl_val} ${class} TXT \"$(date +%d.%m.%Y,\ %H:%M:%S\ %Z\ \(%:::z\))\"\n"
+    fi
+    commands="${commands}send\n"
+
+    debug echo -e "${commands}" "| /usr/bin/nsupdate -k ${key}"
+    echo -e "${commands}" | /usr/bin/nsupdate -k "${key}"
+
+    nsupdate_status=${?}
+    if [ ${nsupdate_status} -ne 0 ]; then
+      echo -e "${RED}${BOLD}[✗]${NOBOLD} DNS update failed!${NC}"
+      logger -t "ddnsupdate" "DNS update failed! Wrong configuration?"
+      return 1
+    else
+      echo -e "${GREEN}${BOLD}[✓]${NOBOLD} Updated to ${value}"
+      logger -t "ddnsupdate" "${fqdn%?} updated to ${value}."
+    fi
+  else
+    print_aligned "DDNS-Status" "Update not necessary (DNS=${DNS_VAL}, IP=${ip})"
+    logger -t "ddnsupdate" "Update not necessary. (DNS=${DNS_VAL}, IP=${ip})"
+  fi
+}
+
+dns_del_record() {
+  check_dig
+  local record="$1"
+  local zone="$2"
+  local fqdn="${record}.${zone}."
+  local type="${record_type}"
+  local server="${dns_server}"
+  local key="${dns_key}"
+  local class="${dns_class}"
+
+  if [ -z "$dns_server" ] || [ -z "$dns_key" ]; then
+    echo -e "${RED}dns_server or dns_key missing!${NC}"
+    exit 1
+  fi
+
+  check_key_permissions "$key"
+
+  any_record=""
+  if [ -n "$(dig "$type" ${fqdn%?} @"$server" +short 2>/dev/null)" ]; then
+    any_record="$type"
+  fi
+  if [ -n "$(dig TXT ${fqdn%?} @"$server" +short 2>/dev/null)" ]; then
+    any_record="${any_record:+$any_record, }TXT"
+  fi
+
+  if [ -z "$any_record" ]; then
+    echo -e "${BOLD}[x]${NOBOLD} No records present for ${fqdn}. No deletion necessary."
+    return 0
+  fi
+
+  commands="server ${server}\nzone ${zone}\n"
+  commands="${commands}update delete ${fqdn%?} ${class} ${type}\n"
+  commands="${commands}update delete ${fqdn%?} ${class} TXT\n"
+  commands="${commands}send\n"
+
+  debug echo -e "${commands}" "| /usr/bin/nsupdate -k ${key}"
+  echo -e "${commands}" | /usr/bin/nsupdate -k "${key}"
+
+  nsupdate_status=${?}
+  if [ ${nsupdate_status} -ne 0 ]; then
+    echo -e "${RED}${BOLD}[✗]${NOBOLD} DNS deletion failed for ${fqdn}${NC}"
+    logger -t "ddnsupdate" "DNS deletion failed! Wrong configuration?"
+    return 1
+  else
+    echo -e "${GREEN}${BOLD}[✓]${NOBOLD} ${type}/TXT record for ${fqdn} deleted"
+    logger -t "ddnsupdate" "${fqdn} ${type}/TXT record deleted."
+  fi
+}
+
+run_self_update() {
+    check_wget
+    local self="$1"
+    local update_base="$2"
+    local script_path
+    script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+    local script_name
+    script_name=$(basename "$script_path")
+    local script_dir
+    script_dir=$(dirname "$script_path")
+
+    echo "Performing self-update"
+
+    # Download latest version
+    echo -ne "\r[ ] Downloading latest version..."
+    if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}/${self}"; then
+        echo -e "\r${RED}${BOLD}[✗]${NOBOLD} Downloading latest version${NC}"
+        echo -e "${RED}${BOLD}[✗]${NOBOLD} Performing self-update${NC}"
+        exit 1
+    fi
+    echo -e "\r${GREEN}${BOLD}[✓]${NOBOLD} Downloading latest version${NC}"
+
+    # Copy over modes from old version
+    echo -ne "\r[ ] Copying over modes from old version..."
+    local octal_mode
+    octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
+    if ! chmod "$octal_mode" "${script_name}.tmp"; then
+        echo -e "\r${RED}${BOLD}[✗]${NOBOLD} Copying over modes from old version${NC}"
+        echo -e "${RED}${BOLD}[✗]${NOBOLD} Performing self-update${NC}"
+        exit 1
+    fi
+    echo -e "\r${GREEN}${BOLD}[✓]${NOBOLD} Copying over modes from old version${NC}"
+
+    # Start update process
+    echo -ne "\r[ ] Start update process..."
+    cat > updateScript.sh <<EOF
+#!/bin/bash
+if mv "${script_name}.tmp" "${script_path}"; then
+    printf "\r\033[0KUpdate complete.\n"
+    rm -f "\${0}"
+else
+    printf "\r\033[0KUpdate failed. Please try again!\n"
+    rm -f "\${0}"
+fi
+EOF
+    chmod +x updateScript.sh
+    exec /bin/bash updateScript.sh
+}
+
+check_self_update() {
+    self=$(basename "${0}")
+    local update_base=https://raw2.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
+    local myself_web_version
+    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
+    if [ -z "$myself_web_version" ]; then
+        echo -e "[${RED}${BOLD}x${NC}${NOBOLD}] No online version found for ${self} at ${update_base}${self}."
+        exit 1
+    fi
+    echo "Web version: ${myself_web_version}"
+    myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
+    echo "Local version: ${myself_local_version}"
+    if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
+        echo -e "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}"
+        read -p "Update [y/N] " -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            run_self_update "${self}" "${update_base}"
+        fi
+    else
+        echo "No update available: v.${myself_local_version}"
+    fi
+}
+
+main() {
+  if [ $# -lt 1 ]; then
+    usage
+  fi
+
+  if [ "$1" = "--help" ]; then
+    usage
+  fi
+
+  if [ "$1" = "-listzone" ]; then
+    shift
+    if [ $# -lt 1 ]; then
+      usage
+    fi
+    local zone="$1"
+    : "${dns_server:=${DNS_SERVER}}"
+    if [[ -z "$dns_server" ]]; then
+      echo "DNS server must be specified for zone listing (-dns-server)."
+      exit 1
+    fi
+    list_zone "$zone"
+    exit 0
+  fi
+
+  if [ "$1" = "-u" ]; then
+    check_self_update
+    exit 0
+  fi
+
+  local action="$1"
+  shift
+
+  local record=""
+  local zone=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -dns-server)
+        dns_server="$2"
+        shift 2
+        ;;
+      -key)
+        dns_key="$2"
+        shift 2
+        ;;
+      -ip-detect)
+        ip_detect_url="$2"
+        shift 2
+        ;;
+      -type)
+        record_type="$2"
+        shift 2
+        ;;
+      -ttl)
+        ttl="$2"
+        shift 2
+        ;;
+      -class)
+        dns_class="$2"
+        shift 2
+        ;;
+      -ipv4)
+        ip_version="ipv4"
+        shift
+        ;;
+      -ipv6)
+        ip_version="ipv6"
+        shift
+        ;;
+      -target-public-ip)
+        use_public_ip_target=1
+        shift
+        ;;
+      -target)
+        target_value="$2"
+        shift 2
+        ;;
+      -v)
+        debug_mode=1
+        shift
+        ;;
+      -y)
+        auto_overwrite_existing_records="y"
+        shift
+        ;;
+      *)
+        if [ -z "$record" ]; then
+          record="$1"
+        elif [ -z "$zone" ]; then
+          zone="$1"
+        else
+          usage
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  : "${dns_server:=${DNS_SERVER}}"
+  : "${dns_key:=${DNS_KEY}}"
+  : "${ip_detect_url:=${IP_DETECT_URL:-https://api.ipify.org}}"
+
+  if [[ -z "$record" || -z "$zone" || -z "$dns_server" || -z "$dns_key" ]]; then
+    usage
+  fi
+
+  check_nsupdate
+
+  case "$action" in
+    add)
+      dns_add_update "$record" "$zone"
+      ;;
+    del)
+      dns_del_record "$record" "$zone"
+      ;;
+    check)
+      check_record "$record" "$zone"
+      ;;
+    *)
+      usage
+      ;;
+  esac
+}
+
+main "$@"
