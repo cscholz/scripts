@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20240624.22
+Version=20240624.23
 
 set -eo pipefail
 
@@ -16,7 +16,7 @@ CROSSMARK="✗"
 # Default values
 dns_server=""
 dns_key=""
-ip_detect_url="https://api.ipify.org"
+ip_detect_url=""
 record_type="A"
 ttl="3600"
 dns_class="IN"
