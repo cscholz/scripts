@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20240625.04
+Version=20240625.05
 
 set -eo pipefail
 
@@ -80,11 +80,11 @@ check_key_permissions() {
 
 usage() {
   echo -e "\033[1;4m1. Usage:\033[0m"
-  echo "   ddnsupdate [Global Parameter] <command> [Parameter] [Arguments...]"
+  echo "   dnszone-update [Global Parameter] <command> [Parameter] [Arguments...]"
   echo
   echo -e "\033[1;4m2. Config:\033[0m"
-  echo "   - /etc/ddnsupdate.conf (global, system-wide)"
-  echo "   - ~/.config/ddnsupdate.conf (user-specific)"
+  echo "   - /etc/dnszone-update.conf (global, system-wide)"
+  echo "   - ~/.config/dnszone-update.conf (user-specific)"
   echo "   User config overrides global config."
   echo "   CLI parameters override both config files."
   echo
@@ -124,11 +124,11 @@ usage() {
   echo "     minimum      Minimum TTL (default: 172800)"
   echo
   echo -e "\033[1;4m5b. Zone Examples:\033[0m"
-  echo "   1) \$ ddnsupdate soa-get example.com"
-  echo "   2) \$ ddnsupdate soa-set example.com ns1.example.com. hostmaster.example.com. 2024062501 3600 600 86400 60"
-  echo "   3) \$ ddnsupdate soa-set-serial example.com 2024062502"
-  echo "   4) \$ ddnsupdate soa-set-refresh example.com 7200"
-  echo "   5) \$ ddnsupdate listzone example.com"
+  echo "   1) \$ dnszone-update soa-get example.com"
+  echo "   2) \$ dnszone-update soa-set example.com ns1.example.com. hostmaster.example.com. 2024062501 3600 600 86400 60"
+  echo "   3) \$ dnszone-update soa-set-serial example.com 2024062502"
+  echo "   4) \$ dnszone-update soa-set-refresh example.com 7200"
+  echo "   5) \$ dnszone-update listzone example.com"
   echo
   echo -e "\033[1;4m6a. Record Parameter:\033[0m"
   echo "   -dns-server <server>      DNS server to use (default from config)"
@@ -144,20 +144,20 @@ usage() {
   echo "   -y                        Automatically overwrite existing records (default: n)"
   echo
   echo -e "\033[1;4m6b. Record Examples:\033[0m"
-  echo "   1) dynip.example.com. 3600 IN A 203.0.113.42"
-  echo "      \$ ddnsupdate add dynip example.com"
+  echo "   1) dsl.example.com. 3600 IN A 203.0.113.42"
+  echo "      \$ dnszone-update add dsl example.com"
   echo
-  echo "   2) example.sclz.eu. 60 IN A 198.51.100.42"
-  echo "      \$ ddnsupdate add example sclz.eu -target-public-ip -ttl 60"
+  echo "   2) dsl.example.com. 60 IN A 198.51.100.42"
+  echo "      \$ dnszone-update add dsl example.com -target-public-ip -ttl 60"
   echo
-  echo "   3) example.sclz.eu. 3600 IN TXT \"v=spf1 include:_spf.example.com ~all\""
-  echo "      \$ ddnsupdate add example sclz.eu -type TXT -target '\"v=spf1 include:_spf.example.com ~all\"'"
+  echo "   3) spf.example.com. 3600 IN TXT \"v=spf1 include:_spf.example.com ~all\""
+  echo "      \$ dnszone-update add spf example.com -type TXT -target '\"v=spf1 include:_spf.example.com ~all\"'"
   echo
-  echo "   4) www.sclz.eu. 3600 IN CNAME example.com."
-  echo "      \$ ddnsupdate add www sclz.eu -type CNAME -ttl 3600 -class IN -dns-server mx02.o-o-s.de -key /root/scripts/ddnsupdate.key -target \"example.com.\""
+  echo "   4) www.example.com. 3600 IN CNAME example.com."
+  echo "      \$ dnszone-update add www example.com -type CNAME -ttl 3600 -class IN -dns-server ns1.example.com -key /root/dnszone-update.key -target \"example.com.\""
   echo
-  echo "   5) sclz.eu. 3600 IN MX 10 mail.example.com."
-  echo "      \$ ddnsupdate add @ sclz.eu -type MX -target \"10 mail.example.com.\""
+  echo "   5) example.com. 3600 IN MX 10 mail.example.com."
+  echo "      \$ dnszone-update add @ example.com -type MX -target \"10 mail.example.com.\""
   echo
 }
 
@@ -350,7 +350,7 @@ dns_add_update() {
     print_aligned "Public IPv${IPvX}" "$ip"
     if [ -z "${ip}" ]; then
       echo "Could not determine public IP. No internet connection?"
-      logger -t "ddnsupdate" "Could not determine public IP. No internet connection?"
+      logger -t "dnszone-update" "Could not determine public IP. No internet connection?"
       return 1
     fi
     value="$ip"
@@ -429,7 +429,7 @@ dns_add_update() {
   fi
 
   if [ "${DNS_VAL}" != "${value}" ] || [ "${update}" -eq 1 ]; then
-    logger -t "ddnsupdate" "Update required. (DNS=${DNS_VAL}, IP=${ip})"
+    logger -t "dnszone-update" "Update required. (DNS=${DNS_VAL}, IP=${ip})"
     ${pre_update_cmd}
 
     commands="server ${server}\nzone ${zone}\n"
@@ -448,15 +448,15 @@ dns_add_update() {
     nsupdate_status=${?}
     if [ ${nsupdate_status} -ne 0 ]; then
       echo -e "${RED}${BOLD}[✗]${NOBOLD} DNS update failed!${NC}"
-      logger -t "ddnsupdate" "DNS update failed! Wrong configuration?"
+      logger -t "dnszone-update" "DNS update failed! Wrong configuration?"
       return 1
     else
       echo -e "${GREEN}${BOLD}[✓]${NOBOLD} Updated to ${value}"
-      logger -t "ddnsupdate" "${fqdn%?} updated to ${value}."
+      logger -t "dnszone-update" "${fqdn%?} updated to ${value}."
     fi
   else
     print_aligned "DDNS-Status" "Update not necessary (DNS=${DNS_VAL}, IP=${ip})"
-    logger -t "ddnsupdate" "Update not necessary. (DNS=${DNS_VAL}, IP=${ip})"
+    logger -t "dnszone-update" "Update not necessary. (DNS=${DNS_VAL}, IP=${ip})"
   fi
 }
 
@@ -497,11 +497,11 @@ dns_del_record() {
   nsupdate_status=${?}
   if [ ${nsupdate_status} -ne 0 ]; then
     echo -e "${RED}${BOLD}[✗]${NOBOLD} DNS deletion failed for ${fqdn}${NC}"
-    logger -t "ddnsupdate" "DNS deletion failed! Wrong configuration?"
+    logger -t "dnszone-update" "DNS deletion failed! Wrong configuration?"
     return 1
   else
     echo -e "${GREEN}${BOLD}[✓]${NOBOLD} ${type}/TXT record for ${fqdn} deleted"
-    logger -t "ddnsupdate" "${fqdn} ${type}/TXT record deleted."
+    logger -t "dnszone-update" "${fqdn} ${type}/TXT record deleted."
   fi
 }
 
