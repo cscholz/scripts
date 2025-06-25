@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20240625.05
+Version=20240625.07
 
 set -eo pipefail
 
@@ -13,6 +13,11 @@ NOBOLD='\033[0m'
 CHECKMARK="✓"
 CROSSMARK="✗"
 
+SCRIPT_NAME="$(basename "$0")"
+CONFIG_NAME="${SCRIPT_NAME%.sh}.conf"
+CONFIG_FILE="/etc/${CONFIG_NAME}"
+USER_CONFIG="$HOME/.config/${CONFIG_NAME}"
+
 dns_server=""
 dns_key=""
 ip_detect_url=""
@@ -25,9 +30,6 @@ debug_mode=0
 target_value=""
 pre_update_cmd=""
 auto_overwrite_existing_records="n"
-
-CONFIG_FILE="/etc/dnszone-update.conf"
-USER_CONFIG="$HOME/.config/dnszone-update.conf"
 
 # Load config
 if [ -f "$CONFIG_FILE" ]; then
@@ -80,11 +82,11 @@ check_key_permissions() {
 
 usage() {
   echo -e "\033[1;4m1. Usage:\033[0m"
-  echo "   dnszone-update [Global Parameter] <command> [Parameter] [Arguments...]"
+  echo "   ${SCRIPT_NAME} [Global Parameter] <command> [Parameter] [Arguments...]"
   echo
   echo -e "\033[1;4m2. Config:\033[0m"
-  echo "   - /etc/dnszone-update.conf (global, system-wide)"
-  echo "   - ~/.config/dnszone-update.conf (user-specific)"
+  echo "   - /etc/${CONFIG_NAME} (global, system-wide)"
+  echo "   - ~/.config/${CONFIG_NAME} (user-specific)"
   echo "   User config overrides global config."
   echo "   CLI parameters override both config files."
   echo
@@ -124,11 +126,11 @@ usage() {
   echo "     minimum      Minimum TTL (default: 172800)"
   echo
   echo -e "\033[1;4m5b. Zone Examples:\033[0m"
-  echo "   1) \$ dnszone-update soa-get example.com"
-  echo "   2) \$ dnszone-update soa-set example.com ns1.example.com. hostmaster.example.com. 2024062501 3600 600 86400 60"
-  echo "   3) \$ dnszone-update soa-set-serial example.com 2024062502"
-  echo "   4) \$ dnszone-update soa-set-refresh example.com 7200"
-  echo "   5) \$ dnszone-update listzone example.com"
+  echo "   1) \$ ${SCRIPT_NAME} soa-get example.com"
+  echo "   2) \$ ${SCRIPT_NAME} soa-set example.com ns1.example.com. hostmaster.example.com. 2024062501 3600 600 86400 60"
+  echo "   3) \$ ${SCRIPT_NAME} soa-set-serial example.com 2024062502"
+  echo "   4) \$ ${SCRIPT_NAME} soa-set-refresh example.com 7200"
+  echo "   5) \$ ${SCRIPT_NAME} listzone example.com"
   echo
   echo -e "\033[1;4m6a. Record Parameter:\033[0m"
   echo "   -dns-server <server>      DNS server to use (default from config)"
@@ -145,19 +147,19 @@ usage() {
   echo
   echo -e "\033[1;4m6b. Record Examples:\033[0m"
   echo "   1) dsl.example.com. 3600 IN A 203.0.113.42"
-  echo "      \$ dnszone-update add dsl example.com"
+  echo "      \$ ${SCRIPT_NAME} add dsl example.com"
   echo
   echo "   2) dsl.example.com. 60 IN A 198.51.100.42"
-  echo "      \$ dnszone-update add dsl example.com -target-public-ip -ttl 60"
+  echo "      \$ ${SCRIPT_NAME} add dsl example.com -target-public-ip -ttl 60"
   echo
   echo "   3) spf.example.com. 3600 IN TXT \"v=spf1 include:_spf.example.com ~all\""
-  echo "      \$ dnszone-update add spf example.com -type TXT -target '\"v=spf1 include:_spf.example.com ~all\"'"
+  echo "      \$ ${SCRIPT_NAME} add spf example.com -type TXT -target '\"v=spf1 include:_spf.example.com ~all\"'"
   echo
   echo "   4) www.example.com. 3600 IN CNAME example.com."
-  echo "      \$ dnszone-update add www example.com -type CNAME -ttl 3600 -class IN -dns-server ns1.example.com -key /root/dnszone-update.key -target \"example.com.\""
+  echo "      \$ ${SCRIPT_NAME} add www example.com -type CNAME -ttl 3600 -class IN -dns-server ns1.example.com -key /root/${SCRIPT_NAME}.key -target \"example.com.\""
   echo
   echo "   5) example.com. 3600 IN MX 10 mail.example.com."
-  echo "      \$ dnszone-update add @ example.com -type MX -target \"10 mail.example.com.\""
+  echo "      \$ ${SCRIPT_NAME} add @ example.com -type MX -target \"10 mail.example.com.\""
   echo
 }
 
@@ -264,9 +266,9 @@ set_zone_soa_expire() {
     checkpackage dig dnsutils
     local old_soa primary email serial refresh retry expire minimum
     debug dig +short SOA "${zone}." @"${server}"
-    old_oa=$(dig +short SOA "${zone}." @"${server}")
-    if [ -z "$old_oa" ]; then echo "No SOA found!"; return 1; fi
-    read -r primary email serial refresh retry expire minimum <<<"$old_oa"
+    old_soa=$(dig +short SOA "${zone}." @"${server}")
+    if [ -z "$old_soa" ]; then echo "No SOA found!"; return 1; fi
+    read -r primary email serial refresh retry expire minimum <<<"$old_soa"
     set_zone_soa "$zone" "$primary" "$email" "$serial" "$refresh" "$retry" "$new_expire" "$minimum"
 }
 
@@ -350,7 +352,7 @@ dns_add_update() {
     print_aligned "Public IPv${IPvX}" "$ip"
     if [ -z "${ip}" ]; then
       echo "Could not determine public IP. No internet connection?"
-      logger -t "dnszone-update" "Could not determine public IP. No internet connection?"
+      logger -t "${SCRIPT_NAME}" "Could not determine public IP. No internet connection?"
       return 1
     fi
     value="$ip"
@@ -429,7 +431,7 @@ dns_add_update() {
   fi
 
   if [ "${DNS_VAL}" != "${value}" ] || [ "${update}" -eq 1 ]; then
-    logger -t "dnszone-update" "Update required. (DNS=${DNS_VAL}, IP=${ip})"
+    logger -t "${SCRIPT_NAME}" "Update required. (DNS=${DNS_VAL}, IP=${ip})"
     ${pre_update_cmd}
 
     commands="server ${server}\nzone ${zone}\n"
@@ -448,15 +450,15 @@ dns_add_update() {
     nsupdate_status=${?}
     if [ ${nsupdate_status} -ne 0 ]; then
       echo -e "${RED}${BOLD}[✗]${NOBOLD} DNS update failed!${NC}"
-      logger -t "dnszone-update" "DNS update failed! Wrong configuration?"
+      logger -t "${SCRIPT_NAME}" "DNS update failed! Wrong configuration?"
       return 1
     else
       echo -e "${GREEN}${BOLD}[✓]${NOBOLD} Updated to ${value}"
-      logger -t "dnszone-update" "${fqdn%?} updated to ${value}."
+      logger -t "${SCRIPT_NAME}" "${fqdn%?} updated to ${value}."
     fi
   else
     print_aligned "DDNS-Status" "Update not necessary (DNS=${DNS_VAL}, IP=${ip})"
-    logger -t "dnszone-update" "Update not necessary. (DNS=${DNS_VAL}, IP=${ip})"
+    logger -t "${SCRIPT_NAME}" "Update not necessary. (DNS=${DNS_VAL}, IP=${ip})"
   fi
 }
 
@@ -497,17 +499,17 @@ dns_del_record() {
   nsupdate_status=${?}
   if [ ${nsupdate_status} -ne 0 ]; then
     echo -e "${RED}${BOLD}[✗]${NOBOLD} DNS deletion failed for ${fqdn}${NC}"
-    logger -t "dnszone-update" "DNS deletion failed! Wrong configuration?"
+    logger -t "${SCRIPT_NAME}" "DNS deletion failed! Wrong configuration?"
     return 1
   else
     echo -e "${GREEN}${BOLD}[✓]${NOBOLD} ${type}/TXT record for ${fqdn} deleted"
-    logger -t "dnszone-update" "${fqdn} ${type}/TXT record deleted."
+    logger -t "${SCRIPT_NAME}" "${fqdn} ${type}/TXT record deleted."
   fi
 }
 
 run_self_update() {
     checkpackage wget wget
-    local self="$1"
+    local self="${SCRIPT_NAME}"
     local update_base="${UPDATE_BASE:-https://to_be_set/}"
     local script_path
     script_path=$(realpath "$0" 2>/dev/null || echo "$0")
@@ -555,7 +557,7 @@ EOF
 }
 
 check_self_update() {
-    self=$(basename "${0}")
+    local self="${SCRIPT_NAME}"
     local update_base="${UPDATE_BASE:-https://to_be_set/}"
     local myself_web_version
     myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
@@ -580,18 +582,9 @@ check_self_update() {
 }
 
 main() {
-  if [ $# -lt 1 ]; then
-    usage
-  fi
-
-  if [ "$1" = "--help" ]; then
-    usage
-  fi
-
-  if [ "$1" = "-u" ]; then
-    check_self_update
-    exit 0
-  fi
+  if [ $# -lt 1 ]; then usage; fi
+  if [ "$1" = "--help" ]; then usage; fi
+  if [ "$1" = "-u" ]; then check_self_update; exit 0; fi
 
   local action="$1"
   shift
@@ -601,64 +594,22 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -dns-server)
-        dns_server="$2"
-        shift 2
-        ;;
-      -key)
-        dns_key="$2"
-        shift 2
-        ;;
-      -ip-detect)
-        ip_detect_url="$2"
-        shift 2
-        ;;
-      -type)
-        record_type="$2"
-        shift 2
-        ;;
-      -ttl)
-        ttl="$2"
-        shift 2
-        ;;
-      -class)
-        dns_class="$2"
-        shift 2
-        ;;
-      -ipv4)
-        ip_version="ipv4"
-        shift
-        ;;
-      -ipv6)
-        ip_version="ipv6"
-        shift
-        ;;
-      -target-public-ip)
-        use_public_ip_target=1
-        shift
-        ;;
-      -target)
-        target_value="$2"
-        shift 2
-        ;;
-      -v)
-        debug_mode=1
-        shift
-        ;;
-      -y)
-        auto_overwrite_existing_records="y"
-        shift
-        ;;
-      *)
-        if [ -z "$record" ]; then
-          record="$1"
-        elif [ -z "$zone" ]; then
-          zone="$1"
-        else
-          usage
-        fi
-        shift
-        ;;
+      -dns-server) dns_server="$2"; shift 2;;
+      -key) dns_key="$2"; shift 2;;
+      -ip-detect) ip_detect_url="$2"; shift 2;;
+      -type) record_type="$2"; shift 2;;
+      -ttl) ttl="$2"; shift 2;;
+      -class) dns_class="$2"; shift 2;;
+      -ipv4) ip_version="ipv4"; shift;;
+      -ipv6) ip_version="ipv6"; shift;;
+      -target-public-ip) use_public_ip_target=1; shift;;
+      -target) target_value="$2"; shift 2;;
+      -v) debug_mode=1; shift;;
+      -y) auto_overwrite_existing_records="y"; shift;;
+      *) if [ -z "$record" ]; then record="$1";
+         elif [ -z "$zone" ]; then zone="$1";
+         else usage; fi
+         shift;;
     esac
   done
 
@@ -666,52 +617,24 @@ main() {
   : "${dns_key:=${DNS_KEY}}"
   : "${ip_detect_url:=${IP_DETECT_URL:-https://api.ipify.org}}"
 
-  if [[ -z "$dns_server" || -z "$dns_key" ]]; then
-    usage
-  fi
+  if [[ -z "$dns_server" || -z "$dns_key" ]]; then usage; fi
 
   checkpackage nsupdate dnsutils
 
   case "$action" in
-    add)
-      dns_add_update "$record" "$zone"
-      ;;
-    del)
-      dns_del_record "$record" "$zone"
-      ;;
-    check)
-      check_record "$record" "$zone"
-      ;;
-    soa-get)
-      get_zone_soa "$record"
-      ;;
-    soa-set)
-      set_zone_soa "$record" "$zone" "$3" "$4" "$5" "$6" "$7" "$8"
-      ;;
-    soa-set-serial)
-      set_zone_soa_serial "$record" "$zone"
-      ;;
-    soa-set-refresh)
-      set_zone_soa_refresh "$record" "$zone"
-      ;;
-    soa-set-retry)
-      set_zone_soa_retry "$record" "$zone"
-      ;;
-    soa-set-expire)
-      set_zone_soa_expire "$record" "$zone"
-      ;;
-    soa-set-minimum)
-      set_zone_soa_minimum "$record" "$zone"
-      ;;
-    listzone)
-      list_zone "$record"
-      ;;
-    listzone_full)
-      list_zone_full "$record"
-      ;;
-    *)
-      usage
-      ;;
+    add) dns_add_update "$record" "$zone";;
+    del) dns_del_record "$record" "$zone";;
+    check) check_record "$record" "$zone";;
+    soa-get) get_zone_soa "$record";;
+    soa-set) set_zone_soa "$record" "$zone" "$3" "$4" "$5" "$6" "$7" "$8";;
+    soa-set-serial) set_zone_soa_serial "$record" "$zone";;
+    soa-set-refresh) set_zone_soa_refresh "$record" "$zone";;
+    soa-set-retry) set_zone_soa_retry "$record" "$zone";;
+    soa-set-expire) set_zone_soa_expire "$record" "$zone";;
+    soa-set-minimum) set_zone_soa_minimum "$record" "$zone";;
+    listzone) list_zone "$record";;
+    listzone_full) list_zone_full "$record";;
+    *) usage;;
   esac
 }
 
