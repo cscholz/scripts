@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20240625.07
+Version=20240625.08
 
 set -eo pipefail
 
@@ -565,10 +565,11 @@ check_self_update() {
         echo -e "[${RED}${BOLD}x${NC}${NOBOLD}] No online version found for ${self} at ${update_base}${self}."
         exit 1
     fi
-    echo "Web version: ${myself_web_version}"
     myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
 
-    echo "Local version: ${myself_local_version}"
+    printf "%-15s %s\n" "Web version:" "$myself_web_version"
+    printf "%-15s %s\n" "Local version:" "$myself_local_version"
+
     if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
         echo -e "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}"
         read -p "Update [y/N] " -r
@@ -577,7 +578,7 @@ check_self_update() {
             run_self_update "${self}" "${update_base}"
         fi
     else
-        echo "No update available: v.${myself_local_version}"
+        printf "%-15s v.%s\n" "No update available:" "${myself_local_version}"
     fi
 }
 
