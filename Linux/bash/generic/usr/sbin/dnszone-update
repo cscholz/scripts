@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20240625.03
+Version=20240625.04
 
 set -eo pipefail
 
@@ -26,8 +26,8 @@ target_value=""
 pre_update_cmd=""
 auto_overwrite_existing_records="n"
 
-CONFIG_FILE="/etc/ddnsupdate.conf"
-USER_CONFIG="$HOME/.config/ddnsupdate.conf"
+CONFIG_FILE="/etc/dnszone-update.conf"
+USER_CONFIG="$HOME/.config/dnszone-update.conf"
 
 # Load config
 if [ -f "$CONFIG_FILE" ]; then
