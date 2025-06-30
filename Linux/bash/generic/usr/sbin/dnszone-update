@@ -1,5 +1,5 @@
 #!/bin/bash
-Version=20240625.08
+Version=20240630.01
 
 set -eo pipefail
 
@@ -325,11 +325,17 @@ dns_add_update() {
   checkpackage curl curl
   local record="$1"
   local zone="$2"
-  local fqdn="${record}.${zone}."
+  # FQDN korrekt bilden: @ wird zu Zone, sonst Record.Zone
+  local fqdn
+  if [ "$record" = "@" ]; then
+    fqdn="${zone}."
+  else
+    fqdn="${record}.${zone}."
+  fi
   local type="${record_type}"
   local server="${dns_server}"
   local key="${dns_key}"
-  local url="${ip_detect_url}"
+  local url="${ip_detect_url:-https://api.ipify.org}"
   local ttl_val="${ttl}"
   local class="${dns_class}"
   local iptype="${ip_version}"
@@ -467,7 +473,13 @@ dns_del_record() {
   checkpackage dig dnsutils
   local record="$1"
   local zone="$2"
-  local fqdn="${record}.${zone}."
+  # FQDN korrekt bilden: @ wird zu Zone, sonst Record.Zone
+  local fqdn
+  if [ "$record" = "@" ]; then
+    fqdn="${zone}."
+  else
+    fqdn="${record}.${zone}."
+  fi
   local type="${record_type}"
   local server="${dns_server}"
   local key="${dns_key}"
@@ -566,10 +578,8 @@ check_self_update() {
         exit 1
     fi
     myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
-
     printf "%-15s %s\n" "Web version:" "$myself_web_version"
     printf "%-15s %s\n" "Local version:" "$myself_local_version"
-
     if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
         echo -e "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}"
         read -p "Update [y/N] " -r
