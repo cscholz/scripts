@@ -1,13 +1,15 @@
 #!/bin/bash
-# Version=20250625.02
+# Version=20250710.01
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-GLOBAL_CONFIG="/etc/borgbackup.conf"
-USER_CONFIG="$HOME/.config/borgbackup/borgbackup.conf"
+SCRIPT_NAME="$(basename "$0")"
+CONFIG_NAME="${SCRIPT_NAME%.sh}.conf"
+GLOBAL_CONFIG="/etc/${CONFIG_NAME}"
+USER_CONFIG="$HOME/.config/${CONFIG_NAME}"
 
 variables_initialized=false
 
