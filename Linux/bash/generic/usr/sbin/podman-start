@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# project: systemd units für podman container (*.app)
+# version: 20251001.10
+
+set -euo pipefail
+
+# ---- Defaults (für alle Funktionen außer 'update') ----
+SYSTEMD_DIR="/etc/systemd/system"
+UNIT_PREFIX="container-"
+UNIT_SUFFIX=".service"
+UNIT_MATCH_GLOB="container-*.app.service"
+
+# --- UI (nur Abschlussmeldungen) ---
+ESC="$(printf '\033')"; GREEN="${ESC}[32m"; RESET="${ESC}[0m"
+ok() { printf " [%b✓%b] %s\n" "${GREEN}" "${RESET}" "$*"; }
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 list
+  $0 new <full_container_name.app>
+  $0 rm  <full_container_name.app | ${UNIT_PREFIX}<name>.app${UNIT_SUFFIX}>
+  $0 version
+  $0 update
+EOF
+  exit 1
+}
+
+# ---- Versionsinfo ----
+print_version() { grep -E '^# version:' "$0" | sed 's/^# version:[[:space:]]*//'; }
+
+# ---- Helpers ----
+normalize_name_or_unit() {
+  local in="${1:-}"
+  [[ -z "$in" ]] && usage
+  if [[ "$in" =~ \.service$ ]]; then
+    local base="${in##*/}"
+    local re="^${UNIT_PREFIX//./\\.}.*\\.app${UNIT_SUFFIX//./\\.}$"
+    [[ "$base" =~ $re ]] || { echo "Error: unerwarteter Unit-Name: $in" >&2; exit 2; }
+    base="${base#${UNIT_PREFIX}}"
+    echo "${base%${UNIT_SUFFIX}}"      # -> *.app
+    return 0
+  fi
+  [[ "$in" =~ \.app$ ]] || { echo "Error: Containername muss auf '.app' enden"; exit 2; }
+  echo "$in"
+}
+
+unit_file_for() { echo "${UNIT_PREFIX}${1}${UNIT_SUFFIX}"; }
+unit_path_for() { echo "${SYSTEMD_DIR}/$(unit_file_for "$1")"; }
+
+# ---- Funktionen (config-frei) ----
+list_units() {
+  shopt -s nullglob
+  for f in ${SYSTEMD_DIR}/${UNIT_MATCH_GLOB}; do
+    basename "$f"
+  done
+}
+
+new_unit() {
+  local name; name="$(normalize_name_or_unit "${1:-}")"
+  local unit_file; unit_file="$(unit_file_for "$name")"
+  local unit_path; unit_path="$(unit_path_for "$name")"
+
+  podman generate systemd --name "$name" --files >/dev/null
+  ok "Unit erzeugt: ${unit_file}"
+
+  mv "$unit_file" "$SYSTEMD_DIR/" >/dev/null 2>&1
+  ok "Unit platziert: ${unit_path}"
+
+  systemctl enable --now "$unit_file" >/dev/null 2>&1
+  ok "Unit aktiv: ${unit_file}"
+}
+
+rm_unit() {
+  local name; name="$(normalize_name_or_unit "${1:-}")"
+  local unit_file; unit_file="$(unit_file_for "$name")"
+  local unit_path; unit_path="$(unit_path_for "$name")"
+
+  if [[ ! -f "$unit_path" ]]; then
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "$unit_file"; then
+      : # registriert, aber keine Datei im SYSTEMD_DIR
+    else
+      ok "Nichts zu entfernen: ${unit_file}"
+      exit 0
+    fi
+  fi
+
+  systemctl disable --now "$unit_file" >/dev/null 2>&1 || true
+  ok "Gestoppt & deaktiviert: ${unit_file}"
+
+  if [[ -f "$unit_path" ]]; then
+    rm -f "$unit_path" >/dev/null 2>&1
+    ok "Datei entfernt: ${unit_path}"
+  fi
+
+  systemctl daemon-reload >/dev/null 2>&1
+  ok "daemon-reload ausgeführt"
+}
+
+# ====================== Update (nach Projekt 'bash') ======================
+# Konfig-Suchpfade (Projekt 'bash' Vorgaben):
+#   Systemweit:   /etc/bash/podman-start.conf  und /etc/bash/podman-start.d/*.conf (Merge, Reihenfolge alphabetisch)
+#   Benutzer:     $HOME/.config/bash/podman-start.conf
+#   Lokal:        ./.config/podman-start.conf  (falls vorhanden) und ./podman-start.conf (Fallback)
+#
+# Erwartete Schlüssel:
+#   UPDATE_SOURCE   -> Pfad zu neuer Skriptdatei (required)
+#   UPDATE_MODE     -> copy (default) | move
+#   UPDATE_PERMS    -> chmod-Argumente, default: +x
+#   ALLOW_DOWNGRADE -> "true" | "false" (default: false) – vergleicht # version: mit sort -V
+#
+# Beispiel /etc/bash/podman-start.conf:
+#   UPDATE_SOURCE="/root/podman-start.new"
+#   UPDATE_MODE="copy"
+#   UPDATE_PERMS="+x"
+#   ALLOW_DOWNGRADE="false"
+
+_update_config_loaded="false"
+
+load_update_config() {
+  $_update_config_loaded && return 0
+  local files=()
+
+  # Systemweit
+  [[ -f /etc/bash/podman-start.conf ]] && files+=("/etc/bash/podman-start.conf")
+  if [[ -d /etc/bash/podman-start.d ]]; then
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(find /etc/bash/podman-start.d -type f -name '*.conf' -print0 | sort -z)
+  fi
+  # Benutzer
+  [[ -f "$HOME/.config/bash/podman-start.conf" ]] && files+=("$HOME/.config/bash/podman-start.conf")
+  # Lokal
+  [[ -f ".config/podman-start.conf" ]] && files+=(".config/podman-start.conf")
+  [[ -f "./podman-start.conf" ]] && files+=("./podman-start.conf")
+
+  if (( ${#files[@]} == 0 )); then
+    echo "Fehler: Keine Update-Konfiguration gefunden.
+Erwartet z.B. /etc/bash/podman-start.conf oder /etc/bash/podman-start.d/*.conf
+Beispiel:
+  UPDATE_SOURCE=\"/root/podman-start.new\"
+  UPDATE_MODE=\"copy\"
+  UPDATE_PERMS=\"+x\"
+  ALLOW_DOWNGRADE=\"false\"" >&2
+    exit 5
+  fi
+
+  for cfg in "${files[@]}"; do
+    # shellcheck disable=SC1090
+    source "$cfg"
+  done
+
+  : "${UPDATE_MODE:=copy}"
+  : "${UPDATE_PERMS:=+x}"
+  : "${ALLOW_DOWNGRADE:=false}"
+
+  [[ -n "${UPDATE_SOURCE:-}" ]] || { echo "Fehler: UPDATE_SOURCE fehlt in der Update-Konfiguration." >&2; exit 6; }
+  [[ -f "${UPDATE_SOURCE}" ]]   || { echo "Fehler: UPDATE_SOURCE nicht gefunden: ${UPDATE_SOURCE}" >&2; exit 7; }
+
+  _update_config_loaded="true"
+}
+
+extract_version_from_file() {
+  # liest '# version: ...' aus Datei
+  local file="$1"
+  awk -F': ' '/^# version:/ {print $2; exit}' "$file"
+}
+
+do_update() {
+  load_update_config
+
+  # Downgrade-Schutz (falls nicht erlaubt)
+  local current_v new_v
+  current_v="$(print_version)"
+  new_v="$(extract_version_from_file "${UPDATE_SOURCE}")"
+  if [[ -z "$new_v" ]]; then
+    echo "Fehler: Konnte Version aus UPDATE_SOURCE nicht lesen (fehlende '# version:' Zeile)." >&2
+    exit 8
+  fi
+  if [[ "${ALLOW_DOWNGRADE}" != "true" ]]; then
+    # sort -V: niedrig -> hoch; wenn new < current, gilt es als Downgrade
+    if [[ "$(printf '%s\n%s\n' "$current_v" "$new_v" | sort -V | head -n1)" != "$current_v" ]]; then
+      : # current ist kleiner -> ok
+    elif [[ "$new_v" != "$current_v" ]]; then
+      echo "Abbruch: Downgrade nicht erlaubt (aktuell: $current_v, neu: $new_v). Setze ALLOW_DOWNGRADE=true, falls gewünscht." >&2
+      exit 9
+    fi
+  fi
+
+  # Austausch
+  local tmp; tmp="$(mktemp)"
+  if [[ "${UPDATE_MODE}" == "move" ]]; then
+    mv -- "${UPDATE_SOURCE}" "${tmp}"
+  else
+    cp -f -- "${UPDATE_SOURCE}" "${tmp}"
+  fi
+
+  chmod ${UPDATE_PERMS} "${tmp}" >/dev/null 2>&1 || chmod +x "${tmp}"
+  cp -f -- "${tmp}" "$0"
+  rm -f -- "${tmp}"
+
+  ok "Update abgeschlossen -> Version: $(print_version)"
+}
+
+# ---- Dispatcher ----
+cmd="${1:-}"
+case "$cmd" in
+  list)    list_units ;;
+  new)     new_unit "${2:-}" ;;
+  rm)      rm_unit "${2:-}" ;;
+  version) print_version ;;
+  update)  do_update ;;
+  *)       usage ;;
+esac
