@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251008.09
+# Version=20251008.10
 
 #====================[ formatting ]====================
 RED=$'\033[0;31m'
@@ -54,13 +54,97 @@ check_config_permissions() {
   fi
 }
 
+#====================[ self-update ]====================
+run_self_update() {
+    local self="$1"
+    local update_base="$2"
+    local script_path
+    script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+    local script_name
+    script_name=$(basename "$script_path")
+
+    echo "Performing self-update"
+
+    echo -ne "\r[ ] Downloading latest version..."
+    if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}/${self}"; then
+        echo -e "\r[${RED}✗${NC}] Downloading latest version"
+        echo "[${RED}✗${NC}] Performing self-update"
+        exit 1
+    fi
+    echo -e "\r[${GREEN}✓${NC}] Downloading latest version"
+
+    echo -ne "\r[ ] Copying over modes from old version..."
+    local octal_mode
+    octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
+    if ! chmod "$octal_mode" "${script_name}.tmp"; then
+        echo -e "\r[${RED}✗${NC}] Copying over modes from old version"
+        echo "[${RED}✗${NC}] Performing self-update"
+        exit 1
+    fi
+    echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
+
+    echo -ne "\r[ ] Start update process..."
+    cat > updateScript.sh <<EOF
+#!/bin/bash
+if mv "${script_name}.tmp" "${script_path}"; then
+    printf "\r\033[0KUpdate complete.\n"
+    rm -f "\${0}"
+else
+    printf "\r\033[0KUpdate failed. Please try again!\n"
+    rm -f "\${0}"
+fi
+EOF
+    chmod +x updateScript.sh
+    exec /bin/bash updateScript.sh
+    # not reached
+}
+
+check_self_update() {
+    local self update_base
+    self="$(basename "${0}")"
+    update_base="${UPDATE_BASE:-}"
+
+    if [[ -z "$update_base" ]]; then
+        echo -e "[${RED}${CROSSMARK}${NC}] UPDATE_BASE not set. Please define it in ${GLOBAL_CONFIG} or ${USER_CONFIG} (permissions 0600)."
+        exit 20
+    fi
+
+    echo -ne "[ ] Checking remote version\r"
+    local myself_web_version myself_local_version
+    myself_web_version=$(curl -s -r 0-80 "${update_base}${self}" | head -2 | grep -E -o "([0-9]{8}\.[0-9]{2})")
+    myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9]{8}\.[0-9]{2})")
+    echo -e "\r[${GREEN}✓${NC}] Checking remote version"
+    echo "Web version:  ${myself_web_version}"
+    echo "Local version:${myself_local_version}"
+
+    if [[ -z "$myself_web_version" ]]; then
+        echo -e "[${RED}${CROSSMARK}${NC}] Could not read web version from ${update_base}${self}"
+        exit 21
+    fi
+
+    if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
+        echo -e "${YELLOW}New version available: ${myself_local_version} -> ${myself_web_version}${NC}"
+        read -p "Update [y/N] " -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            run_self_update "${self}" "${update_base}"
+        else
+            echo "Aborted."
+            exit 0
+        fi
+    else
+        echo "No update available."
+        exit 0
+    fi
+}
+
 #====================[ usage ]====================
 print_help() {
   cat <<EOF
 ${BOLD}DANE TLSA generator for SMTP certificates${NOBOLD}
 
 Usage:
-  ${SCRIPT_NAME} -s <smtp_host> -p <port[,port2,...]> [-t <ttl>] [-f|-h] [-c] [-zone <file>] [-cmd "<command>"] [-v] [-?]
+  ${SCRIPT_NAME} -s <smtp_host> -p <port[,port2,...]> [-t <ttl>] [-f|-h] [-c] [-zone <file>] [-cmd "<command>"] [-u] [-v] [-?]
 
 Options:
   -s       SMTP server hostname (used for TLS SNI)
@@ -69,9 +153,9 @@ Options:
   -f       Use full owner (_<port>._tcp.<host>.) WITH trailing dot (FQDN)
   -h       Use short host label only in owner (_<port>._tcp.<hostlabel>) WITHOUT dot
   -c       Check mode: compare generated TLSA digests with DNS TLSA records
-  -zone    Path to zone file to update (alias: -u). Not allowed together with -c
-  -u       Alias for -zone
+  -zone    Path to zone file to update (BIND zone update mode; not allowed together with -c)
   -cmd     Post-processing command to run after zone update (e.g. signer/reload)
+  -u       Self-update from HTTP. Requires UPDATE_BASE in config (global or user).
   -v       Debug (verbose command echo)
   -?       Show this help and exit
 
@@ -95,21 +179,16 @@ Examples:
     -zone /etc/bind/zones/o-o-s.de.zone \\
     -cmd "/etc/bind/sign.sh o-o-s.de 2"
 
-Output examples:
-  > Checking: _465._tcp.mx02.o-o-s.de. 60 IN TLSA 3 1 1
-    [${GREEN}${CHECKMARK}${NC}] <HEX>        (match)
-  or
-  > Checking: _465._tcp.mx02.o-o-s.de. 60 IN TLSA 3 1 1
-    [${RED}${CROSSMARK}${NC}] <DNS_HEX>
-    [${GREEN}${CHECKMARK}${NC}] <EXPECTED_HEX>
+  # Self-update (requires UPDATE_BASE in config)
+  ${SCRIPT_NAME} -u
 EOF
 }
 
 #====================[ parse args ]====================
 SMTP_HOST=""; RAW_PORTS=""; TTL="60"; FULL=0; HOSTLABEL_ONLY=0; DO_CHECK=0
-ZONE_FILE=""; POST_CMD=""
+ZONE_FILE=""; POST_CMD=""; DO_UPDATE=0
 
-while getopts ":s:p:t:fchv?u:z:-:" opt; do
+while getopts ":s:p:t:fchv?z:-:u" opt; do
   case "$opt" in
     s) SMTP_HOST="$OPTARG" ;;
     p) RAW_PORTS="$OPTARG" ;;
@@ -118,8 +197,8 @@ while getopts ":s:p:t:fchv?u:z:-:" opt; do
     c) DO_CHECK=1 ;;
     h) HOSTLABEL_ONLY=1 ;;
     v) debug=1 ;;
-    u) ZONE_FILE="$OPTARG" ;;
-    z) ZONE_FILE="$OPTARG" ;;   # hidden alias
+    z) ZONE_FILE="$OPTARG" ;;   # hidden short form for -zone if wanted
+    u) DO_UPDATE=1 ;;
     -)
       case "$OPTARG" in
         zone=*) ZONE_FILE="${OPTARG#zone=}" ;;
@@ -138,6 +217,32 @@ for ((i=1; i<=$#; i++)); do
   if [[ "${!i}" == "-cmd"  ]]; then j=$((i+1)); POST_CMD="${!j}"; fi
 done
 
+#====================[ (optional) load configs ]====================
+# Config ist nur für Update verpflichtend. Hier optional laden:
+[[ -f "$GLOBAL_CONFIG" ]] && { check_config_permissions "$GLOBAL_CONFIG"; source "$GLOBAL_CONFIG"; }
+[[ -f "$USER_CONFIG"   ]] && { check_config_permissions "$USER_CONFIG";   source "$USER_CONFIG"; }
+
+#====================[ prerequisites common ]====================
+checkpackage awk gawk
+checkpackage sed sed
+checkpackage grep grep
+checkpackage stat coreutils
+
+#====================[ update-only branch ]====================
+if [[ $DO_UPDATE -eq 1 ]]; then
+  # Für Update sind curl/wget erforderlich und UPDATE_BASE muss in Config stehen
+  checkpackage curl curl
+  checkpackage wget wget
+  # Prüfe Config-Anforderung
+  if [[ -z "${UPDATE_BASE:-}" ]]; then
+    echo -e "[${RED}${CROSSMARK}${NC}] UPDATE_BASE not set. Define it in ${GLOBAL_CONFIG} or ${USER_CONFIG} (0600)."
+    exit 20
+  fi
+  check_self_update
+  exit 0
+fi
+
+#====================[ args validation for normal modes ]====================
 [[ -z "$SMTP_HOST" || -z "$RAW_PORTS" ]] && { print_help; exit 1; }
 if [[ $FULL -eq 1 && $HOSTLABEL_ONLY -eq 1 ]]; then
   echo -e "[${RED}${CROSSMARK}${NC}] Options -f and -h cannot be used together."
@@ -154,7 +259,6 @@ if [[ ${#PORTS[@]} -eq 0 ]]; then
   echo -e "[${RED}${CROSSMARK}${NC}] No valid port(s) provided."
   exit 1
 fi
-# Validate ports numeric
 for p in "${PORTS[@]}"; do
   if ! [[ "$p" =~ ^[0-9]+$ ]]; then
     echo -e "[${RED}${CROSSMARK}${NC}] Invalid port: $p"
@@ -162,16 +266,8 @@ for p in "${PORTS[@]}"; do
   fi
 done
 
-#====================[ load configs ]====================
-[[ -f "$GLOBAL_CONFIG" ]] && { check_config_permissions "$GLOBAL_CONFIG"; source "$GLOBAL_CONFIG"; }
-[[ -f "$USER_CONFIG"   ]] && { check_config_permissions "$USER_CONFIG";   source "$USER_CONFIG"; }
-
-#====================[ prerequisites ]====================
+#====================[ prerequisites for TLS/DNS ]====================
 checkpackage openssl openssl
-checkpackage awk gawk
-checkpackage sed sed
-checkpackage grep grep
-checkpackage stat coreutils
 checkpackage dig dnsutils
 checkpackage timeout coreutils
 
@@ -202,7 +298,6 @@ fetch_leaf_cert_pem() {
   fi
 
   debug_msg "${cmd[*]} | awk '...cert...'"
-  # Feed empty stdin; parse first PEM cert only
   printf '' | "${cmd[@]}" 2>/dev/null | awk '
     /BEGIN CERTIFICATE/ {incert=1}
     incert {print}
