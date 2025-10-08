@@ -1,0 +1,430 @@
+#!/bin/bash
+# Version=20251008.09
+
+#====================[ formatting ]====================
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+WHITE=$'\033[0;37m'
+NC=$'\033[0m'
+BOLD=$'\033[1m'
+NOBOLD=$'\033[0m'
+CHECKMARK="✓"
+CROSSMARK="✗"
+
+# Disable colors when not a TTY or when NO_COLOR is set
+if [[ ! -t 1 || -n "$NO_COLOR" ]]; then
+  RED=""; GREEN=""; YELLOW=""; WHITE=""; NC=""; BOLD=""; NOBOLD=""
+fi
+
+#====================[ script + config ]====================
+SCRIPT_NAME="$(basename "$0")"
+CONFIG_NAME="${SCRIPT_NAME%.sh}.conf"
+GLOBAL_CONFIG="/etc/${CONFIG_NAME}"
+USER_CONFIG="$HOME/.config/${CONFIG_NAME}"
+
+#====================[ logging / debug ]====================
+debug=0
+debug_msg() { [[ "$debug" == "1" ]] && echo "  ${YELLOW}\$ $*${NC}"; }
+
+#====================[ required executables ]====================
+checkpackage() {
+  local exec="$1" pkg="$2"
+  if ! command -v "$exec" >/dev/null 2>&1; then
+    echo -e "${RED}Package \"$pkg\" not found!${NC}"
+    read -p "Install? (y/N) " -r
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      sudo apt-get update
+      sudo apt-get install -y "$pkg"
+    else
+      exit 1
+    fi
+  fi
+}
+
+#====================[ config permissions ]====================
+check_config_permissions() {
+  local cfg="$1"
+  if [[ -f "$cfg" ]]; then
+    local mode; mode=$(stat -c "%a" "$cfg")
+    if [[ "$mode" != "600" ]]; then
+      echo "[${RED}${CROSSMARK}${NC}] Config file $cfg must have permissions 0600, but has $mode"
+      exit 10
+    fi
+  fi
+}
+
+#====================[ usage ]====================
+print_help() {
+  cat <<EOF
+${BOLD}DANE TLSA generator for SMTP certificates${NOBOLD}
+
+Usage:
+  ${SCRIPT_NAME} -s <smtp_host> -p <port[,port2,...]> [-t <ttl>] [-f|-h] [-c] [-zone <file>] [-cmd "<command>"] [-v] [-?]
+
+Options:
+  -s       SMTP server hostname (used for TLS SNI)
+  -p       Port(s): single or comma-separated (e.g. 25,465,587)
+  -t       TTL in seconds (default: 60)
+  -f       Use full owner (_<port>._tcp.<host>.) WITH trailing dot (FQDN)
+  -h       Use short host label only in owner (_<port>._tcp.<hostlabel>) WITHOUT dot
+  -c       Check mode: compare generated TLSA digests with DNS TLSA records
+  -zone    Path to zone file to update (alias: -u). Not allowed together with -c
+  -u       Alias for -zone
+  -cmd     Post-processing command to run after zone update (e.g. signer/reload)
+  -v       Debug (verbose command echo)
+  -?       Show this help and exit
+
+Behavior:
+  Owner formats per port
+    default:      _<port>._tcp
+    with -h:      _<port>._tcp.<hostlabel>
+    with -f:      _<port>._tcp.<host>.
+  DNS lookups in -c always query the absolute FQDN derived from -s (independent of print format).
+  With -zone, all TLSA records for each given port are removed, then fresh 3 1 1 and 2 0 1 are appended.
+
+Examples:
+  # Generate TLSA records for 465 with FQDN (trailing dot)
+  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 465 -t 60 -f
+
+  # Check TLSA records in DNS against the live certificate (25 and 587)
+  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -c -f
+
+  # Update BIND zone file for 25 and 587, then sign
+  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -t 60 -h \\
+    -zone /etc/bind/zones/o-o-s.de.zone \\
+    -cmd "/etc/bind/sign.sh o-o-s.de 2"
+
+Output examples:
+  > Checking: _465._tcp.mx02.o-o-s.de. 60 IN TLSA 3 1 1
+    [${GREEN}${CHECKMARK}${NC}] <HEX>        (match)
+  or
+  > Checking: _465._tcp.mx02.o-o-s.de. 60 IN TLSA 3 1 1
+    [${RED}${CROSSMARK}${NC}] <DNS_HEX>
+    [${GREEN}${CHECKMARK}${NC}] <EXPECTED_HEX>
+EOF
+}
+
+#====================[ parse args ]====================
+SMTP_HOST=""; RAW_PORTS=""; TTL="60"; FULL=0; HOSTLABEL_ONLY=0; DO_CHECK=0
+ZONE_FILE=""; POST_CMD=""
+
+while getopts ":s:p:t:fchv?u:z:-:" opt; do
+  case "$opt" in
+    s) SMTP_HOST="$OPTARG" ;;
+    p) RAW_PORTS="$OPTARG" ;;
+    t) TTL="$OPTARG" ;;
+    f) FULL=1 ;;
+    c) DO_CHECK=1 ;;
+    h) HOSTLABEL_ONLY=1 ;;
+    v) debug=1 ;;
+    u) ZONE_FILE="$OPTARG" ;;
+    z) ZONE_FILE="$OPTARG" ;;   # hidden alias
+    -)
+      case "$OPTARG" in
+        zone=*) ZONE_FILE="${OPTARG#zone=}" ;;
+        cmd=*)  POST_CMD="${OPTARG#cmd=}" ;;
+        *) echo "Unknown long option --$OPTARG"; print_help; exit 1 ;;
+      esac
+      ;;
+    \?) print_help; exit 0 ;;
+    :)  echo "Option -$OPTARG requires an argument"; print_help; exit 1 ;;
+  esac
+done
+
+# manual parse for "-zone" / "-cmd" (space-separated)
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "-zone" ]]; then j=$((i+1)); ZONE_FILE="${!j}"; fi
+  if [[ "${!i}" == "-cmd"  ]]; then j=$((i+1)); POST_CMD="${!j}"; fi
+done
+
+[[ -z "$SMTP_HOST" || -z "$RAW_PORTS" ]] && { print_help; exit 1; }
+if [[ $FULL -eq 1 && $HOSTLABEL_ONLY -eq 1 ]]; then
+  echo -e "[${RED}${CROSSMARK}${NC}] Options -f and -h cannot be used together."
+  exit 1
+fi
+if [[ -n "$ZONE_FILE" && $DO_CHECK -eq 1 ]]; then
+  echo -e "[${RED}${CROSSMARK}${NC}] Options -zone and -c cannot be used together."
+  exit 1
+fi
+
+# Parse comma-separated ports
+IFS=',' read -r -a PORTS <<< "$RAW_PORTS"
+if [[ ${#PORTS[@]} -eq 0 ]]; then
+  echo -e "[${RED}${CROSSMARK}${NC}] No valid port(s) provided."
+  exit 1
+fi
+# Validate ports numeric
+for p in "${PORTS[@]}"; do
+  if ! [[ "$p" =~ ^[0-9]+$ ]]; then
+    echo -e "[${RED}${CROSSMARK}${NC}] Invalid port: $p"
+    exit 1
+  fi
+done
+
+#====================[ load configs ]====================
+[[ -f "$GLOBAL_CONFIG" ]] && { check_config_permissions "$GLOBAL_CONFIG"; source "$GLOBAL_CONFIG"; }
+[[ -f "$USER_CONFIG"   ]] && { check_config_permissions "$USER_CONFIG";   source "$USER_CONFIG"; }
+
+#====================[ prerequisites ]====================
+checkpackage openssl openssl
+checkpackage awk gawk
+checkpackage sed sed
+checkpackage grep grep
+checkpackage stat coreutils
+checkpackage dig dnsutils
+checkpackage timeout coreutils
+
+#====================[ functions ]====================
+# OpenSSL connect timeout (seconds)
+OPENSSL_TIMEOUT="${OPENSSL_TIMEOUT:-15}"
+
+fetch_leaf_cert_pem() {
+  # Robust certificate fetch for SMTPS (465) and SMTP+STARTTLS (25/587)
+  local host="$1" port="$2"
+  local -a cmd
+
+  if [[ "$port" == "465" ]]; then
+    # Implicit TLS
+    cmd=(timeout "${OPENSSL_TIMEOUT}s" openssl s_client
+         -connect "${host}:${port}"
+         -servername "${host}"
+         -showcerts
+         -crlf)
+  else
+    # Explicit STARTTLS for SMTP
+    cmd=(timeout "${OPENSSL_TIMEOUT}s" openssl s_client
+         -connect "${host}:${port}"
+         -servername "${host}"
+         -starttls smtp
+         -showcerts
+         -crlf)
+  fi
+
+  debug_msg "${cmd[*]} | awk '...cert...'"
+  # Feed empty stdin; parse first PEM cert only
+  printf '' | "${cmd[@]}" 2>/dev/null | awk '
+    /BEGIN CERTIFICATE/ {incert=1}
+    incert {print}
+    /END CERTIFICATE/ {print; exit}'
+}
+
+sha256_of_der_cert() { openssl x509 -outform der 2>/dev/null | openssl dgst -sha256 2>/dev/null | awk '{print $2}'; }
+sha256_of_spki() {
+  openssl x509 -noout -pubkey 2>/dev/null \
+    | openssl pkey -pubin -outform der 2>/dev/null \
+    | openssl dgst -sha256 2>/dev/null | awk '{print $2}'
+}
+
+print_ttl_notice() {
+  local ttl_sec="$1"
+  local ttl_min=$(( (ttl_sec + 59) / 60 ))
+  echo
+  echo -e "${BOLD}After DNS update:${NC} new record valid after max ${ttl_sec}s (~${ttl_min}m)."
+}
+
+build_owner_print() {
+  # $1=port
+  local port="$1"
+  local hostlabel="${SMTP_HOST%%.*}"
+  if [[ $FULL -eq 1 ]]; then
+    echo "_${port}._tcp.${SMTP_HOST}."
+  elif [[ $HOSTLABEL_ONLY -eq 1 ]]; then
+    echo "_${port}._tcp.${hostlabel}"
+  else
+    echo "_${port}._tcp"
+  fi
+}
+
+build_owner_query() {
+  # $1=port — Always absolute FQDN for DNS
+  local port="$1"
+  local host="${SMTP_HOST%.}"
+  local has_dot=0
+  [[ "$host" == *.* ]] && has_dot=1
+  local hostlabel="${host%%.*}"
+  local domain_rest="${host#*.}"
+
+  if [[ $FULL -eq 1 ]]; then
+    echo "_${port}._tcp.${host}."
+  elif [[ $HOSTLABEL_ONLY -eq 1 ]]; then
+    if [[ $has_dot -eq 1 && "$domain_rest" != "$host" && -n "$domain_rest" ]]; then
+      echo "_${port}._tcp.${hostlabel}.${domain_rest}."
+    else
+      echo "_${port}._tcp.${hostlabel}."
+    fi
+  else
+    if [[ $has_dot -eq 1 ]]; then
+      echo "_${port}._tcp.${host}."
+    else
+      echo "_${port}._tcp.${hostlabel}."
+    fi
+  fi
+}
+
+dns_get_tlsa() {
+  local qname="$1"
+  debug_msg "dig +short TLSA ${qname}"
+  dig +short TLSA "$qname"
+}
+
+check_one() {
+  # $1=owner_print $2=qname $3=ttl $4=usage $5=selector $6=mtype $7=expected_hex
+  local owner_print="$1" qname="$2" ttl="$3" usage="$4" selector="$5" mtype="$6" expected_hex="$7"
+  echo -e "${WHITE}> Checking: ${owner_print} ${ttl} IN TLSA ${usage} ${selector} ${mtype}${NC}"
+
+  local lines dns_hex_list=()
+  lines="$(dns_get_tlsa "$qname" | tr -d '\r')"
+  while IFS= read -r ln; do
+    [[ -z "$ln" ]] && continue
+    local u s m
+    u="$(echo "$ln" | awk '{print $1}')" || true
+    s="$(echo "$ln" | awk '{print $2}')" || true
+    m="$(echo "$ln" | awk '{print $3}')" || true
+    if [[ "$u" == "$usage" && "$s" == "$selector" && "$m" == "$mtype" ]]; then
+      local hx
+      hx="$(echo "$ln" | awk '{for(i=4;i<=NF;i++) printf "%s", $i}' | tr '[:lower:]' '[:upper:]')"
+      dns_hex_list+=("$hx")
+    fi
+  done <<< "$lines"
+
+  local exp_up="${expected_hex^^}"
+  local matched=0
+  if [[ ${#dns_hex_list[@]} -gt 0 ]]; then
+    for hx in "${dns_hex_list[@]}"; do
+      if [[ "$hx" == "$exp_up" ]]; then
+        matched=1
+        echo "  [${GREEN}${CHECKMARK}${NC}] ${hx}"
+      else
+        echo "  [${RED}${CROSSMARK}${NC}] ${hx}"
+      fi
+    done
+    if [[ $matched -eq 0 ]]; then
+      echo "  [${GREEN}${CHECKMARK}${NC}] ${exp_up}"
+    fi
+  else
+    echo "  [${RED}${CROSSMARK}${NC}] not found in DNS"
+    echo "  [${GREEN}${CHECKMARK}${NC}] ${exp_up}"
+  fi
+}
+
+# --- Zone helpers ---
+zone_backup() {
+  local zf="$1"
+  local ts; ts="$(date +%Y%m%d-%H%M%S)"
+  cp -f -- "$zf" "${zf}.bak.${ts}" || return 1
+}
+
+zone_delete_port_tlsas() {
+  # Remove any TLSA records for this port from zone file
+  local zf="$1" port="$2"
+  local tmp="${zf}.tmp.$$"
+  local sedpat="^[[:space:]]*_${port}[.]_tcp([.][A-Za-z0-9_-]+([.][A-Za-z0-9_.-]+)*)?[.]?[[:space:]]+([0-9]+[[:space:]]+)?IN[[:space:]]+TLSA\\b"
+  debug_msg "Deleting lines matching: ${sedpat}"
+  if ! sed -E "/${sedpat}/d" "$zf" > "$tmp"; then
+    rm -f "$tmp"; return 1
+  fi
+  mv -f -- "$tmp" "$zf" || return 1
+}
+
+zone_append_records() {
+  local zf="$1" owner_print="$2" ttl="$3" hex311="$4" hex201="$5"
+  {
+    echo "${owner_print} ${ttl} IN TLSA 3 1 1 ${hex311}"
+    echo "${owner_print} ${ttl} IN TLSA 2 0 1 ${hex201}"
+  } >> "$zf" || return 1
+}
+
+run_post_cmd() {
+  local cmd="$1"
+  [[ -z "$cmd" ]] && return 0
+  debug_msg "$cmd"
+  bash -c "$cmd"
+}
+
+#====================[ main ]====================
+main() {
+  # Zone mode sanity checks
+  if [[ -n "$ZONE_FILE" ]]; then
+    if [[ ! -f "$ZONE_FILE" ]]; then
+      echo -e "[${RED}${CROSSMARK}${NC}] Zone file not found: ${ZONE_FILE}"
+      exit 11
+    fi
+    if [[ ! -w "$ZONE_FILE" ]]; then
+      echo -e "[${RED}${CROSSMARK}${NC}] Zone file not writable: ${ZONE_FILE}"
+      exit 12
+    fi
+    echo -ne "[ ] Backing up zone file ${BOLD}${ZONE_FILE}${NOBOLD}\r"
+    if zone_backup "$ZONE_FILE"; then
+      echo -e "[${GREEN}${CHECKMARK}${NC}] Backing up zone file ${BOLD}${ZONE_FILE}${NOBOLD}"
+    else
+      echo -e "[${RED}${CROSSMARK}${NC}] Backing up zone file ${BOLD}${ZONE_FILE}${NOBOLD}"
+      exit 13
+    fi
+  fi
+
+  # Process each port independently
+  for PORT in "${PORTS[@]}"; do
+    echo -ne "[ ] Fetching leaf certificate for ${BOLD}${SMTP_HOST}:${PORT}${NOBOLD}\r"
+    cert_pem="$(fetch_leaf_cert_pem "$SMTP_HOST" "$PORT")"
+    if [[ -z "$cert_pem" ]]; then
+      echo -e "[${RED}${CROSSMARK}${NC}] Fetching leaf certificate for ${BOLD}${SMTP_HOST}:${PORT}${NOBOLD}"
+      exit 2
+    fi
+    echo -e "[${GREEN}${CHECKMARK}${NC}] Fetching leaf certificate for ${BOLD}${SMTP_HOST}:${PORT}${NOBOLD}"
+
+    tlsa_311="$(printf "%s" "$cert_pem" | sha256_of_spki)"
+    tlsa_201="$(printf "%s" "$cert_pem" | sha256_of_der_cert)"
+    [[ -z "$tlsa_311" || -z "$tlsa_201" ]] && { echo "[${RED}${CROSSMARK}${NC}] Computing TLSA digests failed (port ${PORT})"; exit 3; }
+    tlsa_311="${tlsa_311^^}"
+    tlsa_201="${tlsa_201^^}"
+
+    owner_print="$(build_owner_print "$PORT")"
+    qname="$(build_owner_query "$PORT")"
+
+    if [[ $DO_CHECK -eq 1 ]]; then
+      # CHECK MODE per port
+      check_one "$owner_print" "$qname" "$TTL" 3 1 1 "$tlsa_311"
+      check_one "$owner_print" "$qname" "$TTL" 2 0 1 "$tlsa_201"
+      echo
+    elif [[ -n "$ZONE_FILE" ]]; then
+      # ZONE UPDATE per port
+      echo -ne "[ ] Deleting existing TLSA records for port ${BOLD}${PORT}${NOBOLD}\r"
+      if zone_delete_port_tlsas "$ZONE_FILE" "$PORT"; then
+        echo -e "[${GREEN}${CHECKMARK}${NC}] Deleting existing TLSA records for port ${BOLD}${PORT}${NOBOLD}"
+      else
+        echo -e "[${RED}${CROSSMARK}${NC}] Deleting existing TLSA records for port ${BOLD}${PORT}${NOBOLD}"
+        exit 14
+      fi
+
+      echo -ne "[ ] Appending new TLSA records to zone (port ${BOLD}${PORT}${NOBOLD})\r"
+      if zone_append_records "$ZONE_FILE" "$owner_print" "$TTL" "$tlsa_311" "$tlsa_201"; then
+        echo -e "[${GREEN}${CHECKMARK}${NC}] Appending new TLSA records to zone (port ${BOLD}${PORT}${NOBOLD})"
+      else
+        echo -e "[${RED}${CROSSMARK}${NC}] Appending new TLSA records to zone (port ${BOLD}${PORT}${NOBOLD})"
+        exit 15
+      fi
+    else
+      # Just print (generation) per port
+      echo
+      echo "${BOLD}TLSA records (port ${PORT}):${NOBOLD}"
+      echo "${owner_print} ${TTL} IN TLSA 3 1 1 ${tlsa_311}"
+      echo "${owner_print} ${TTL} IN TLSA 2 0 1 ${tlsa_201}"
+      print_ttl_notice "$TTL"
+      echo
+    fi
+  done
+
+  # Run post-processing once (after all ports)
+  if [[ -n "$ZONE_FILE" && -n "$POST_CMD" ]]; then
+    echo -ne "[ ] Running post-processing command\r"
+    if run_post_cmd "$POST_CMD"; then
+      echo -e "[${GREEN}${CHECKMARK}${NC}] Running post-processing command"
+    else
+      echo -e "[${RED}${CROSSMARK}${NC}] Running post-processing command"
+      exit 16
+    fi
+  fi
+}
+
+main
