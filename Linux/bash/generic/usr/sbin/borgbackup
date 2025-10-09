@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251009.01
+# Version=20251009.02
 # Wrapper for easy borg usage.
 
 GREEN='\033[0;32m'
@@ -30,6 +30,11 @@ debug_msg() {
         log_status "  ${YELLOW}\$ $*${NC}" 1
     fi
 }
+
+# --- Runtime prerequisites ---
+# Ensure required executables are present (interactive once, then unattended install)
+checkpackage borg borgbackup
+checkpackage mail mailutils
 
 # --- Config permissions check ---
 check_config_permissions() {
