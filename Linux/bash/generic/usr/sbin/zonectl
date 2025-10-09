@@ -705,22 +705,37 @@ EOF
 check_self_update() {
     local self
     self=$(basename "${0}")
-    local update_base="${UPDATE_BASE:-https://to_be_set/}"
-    local myself_web_version
-    myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
-    log_status "Web version: ${myself_web_version}" 1
-    local myself_local_version
-    myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)")
-    log_status "Local version: ${myself_local_version}" 1
-    if [[ -n "${myself_web_version}" && "${myself_web_version}" > "${myself_local_version}" ]]; then
-        log_status "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}" 1
+    local update_base="${UPDATE_BASE:-https://to_be_set/}"  # keep trailing slash in UPDATE_BASE
+    # Fetch only the first ~200 bytes from remote
+    local remote_head
+    remote_head=$(curl -fsS -r 0-200 "${update_base}${self}" | tr -d '\r' || true)
+
+    # Parse versions from "Version=" lines
+    local myself_web_version myself_local_version
+    myself_web_version=$(printf '%s\n' "$remote_head" | awk -F= '/^# *Version=/{print $2; exit}')
+    myself_local_version=$(head -n 3 "${0}" | tr -d '\r' | awk -F= '/^# *Version=/{print $2; exit}')
+
+    if [[ -z "$myself_web_version" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] No online version found for ${self} at ${update_base}${self}." 1
+        exit 1
+    fi
+    if [[ -z "$myself_local_version" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Could not read local Version header from ${0}." 1
+        exit 1
+    fi
+
+    printf "%-15s %s\n" "Web version:" "$myself_web_version"
+    printf "%-15s %s\n" "Local version:" "$myself_local_version"
+
+    if [[ "${myself_web_version}" > "${myself_local_version}" ]]; then
+        echo -e "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}"
         read -p "Update [y/N] " -r
         echo
         if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
             run_self_update "${self}" "${update_base}"
         fi
     else
-        log_status "No update available: v.${myself_local_version}" 1
+        printf "%-15s v.%s\n" "No update available:" "${myself_local_version}"
     fi
 }
 
