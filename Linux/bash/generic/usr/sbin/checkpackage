@@ -1,18 +1,18 @@
 #!/bin/bash
-# Version=20251009.02
-# Checs for executable; if missing, related package is installed.
+# Version=20251009.03
+# Ensure an executable exists; if missing, ask once and then install the given package non-interactively.
 
 set -euo pipefail
 
 # -------------------------
 # Colors & formatting
 # -------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
-BOLD='\033[1m'
-NOBOLD='\033[0m'
+RED='\e[0;31m'
+GREEN='\e[0;32m'
+YELLOW='\e[0;33m'
+NC='\e[0m'
+BOLD='\e[1m'
+NOBOLD='\e[0m'
 CHECKMARK="✓"
 CROSSMARK="✗"
 
@@ -60,8 +60,17 @@ check_config_permissions() {
 }
 
 # Load configs (global then user)
-[[ -f "$GLOBAL_CONFIG" ]] && check_config_permissions "$GLOBAL_CONFIG" && source "$GLOBAL_CONFIG"
-[[ -f "$USER_CONFIG"  ]] && check_config_permissions "$USER_CONFIG"  && source "$USER_CONFIG"
+config_loaded=false
+if [[ -f "$GLOBAL_CONFIG" ]]; then
+  check_config_permissions "$GLOBAL_CONFIG"
+  source "$GLOBAL_CONFIG"
+  config_loaded=true
+fi
+if [[ -f "$USER_CONFIG" ]]; then
+  check_config_permissions "$USER_CONFIG"
+  source "$USER_CONFIG"
+  config_loaded=true
+fi
 
 # -------------------------
 # Self-update (optional)
@@ -114,6 +123,13 @@ EOF
 check_self_update() {
   local self
   self=$(basename "${0}")
+
+  # Config required
+  if [[ "$config_loaded" == false ]]; then
+    log_status "[${RED}${CROSSMARK}${NC}] No config file found. Cannot perform self-update." 1
+    exit 10
+  fi
+
   local update_base="${UPDATE_BASE:-https://to_be_set/}"
   local myself_web_version
   myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9]{8}\.[0-9]{2})")
@@ -164,17 +180,13 @@ install_package() {
   case "$distro" in
     debian)
       export DEBIAN_FRONTEND=noninteractive
-      debug_msg "sudo apt-get update"
       sudo apt-get update -y >/dev/null
-      debug_msg "sudo apt-get install -y \"$pkg\""
       sudo apt-get install -y "$pkg"
       ;;
     suse)
-      debug_msg "sudo zypper --non-interactive install -y \"$pkg\""
       sudo zypper --non-interactive install -y "$pkg"
       ;;
     arch)
-      debug_msg "sudo pacman -Sy --noconfirm \"$pkg\""
       sudo pacman -Sy --noconfirm "$pkg"
       ;;
     *)
@@ -188,22 +200,20 @@ install_package() {
 # Usage / help
 # -------------------------
 print_usage() {
-  cat <<EOF
-${BOLD}Usage:${NOBOLD} ${SCRIPT_NAME} [options] <executable> <package>
-
-Checks if <executable> exists (via 'which'). If not, asks once:
-"Package \"<package>\" not found! Install? (y/N)"
-If yes, installs <package> non-interactively using the distro's package manager
-(Debian/Ubuntu: apt-get, openSUSE: zypper, Arch: pacman).
-
-${BOLD}Options:${NOBOLD}
-  -v            Enable debug output
-  -h            Show this help
-  -u            Self-update (uses \$UPDATE_BASE)
-
-${BOLD}Example:${NOBOLD}
-  ${SCRIPT_NAME} nsupdate dnsutils
-EOF
+  echo -e "${BOLD}Usage:${NOBOLD} ${SCRIPT_NAME} [options] <executable> <package>"
+  echo
+  echo "Checks if <executable> exists (via 'which'). If not, asks once:"
+  echo "\"Package \\\"<package>\\\" not found! Install? (y/N)\""
+  echo "If yes, installs <package> non-interactively using the distro's package manager"
+  echo "(Debian/Ubuntu: apt-get, openSUSE: zypper, Arch: pacman)."
+  echo
+  echo -e "${BOLD}Options:${NOBOLD}"
+  echo "  -v            Enable debug output"
+  echo "  -h            Show this help"
+  echo "  -u            Self-update"
+  echo
+  echo -e "${BOLD}Example:${NOBOLD}"
+  echo "  ${SCRIPT_NAME} nsupdate dnsutils"
 }
 
 # -------------------------
@@ -229,34 +239,30 @@ EXEC_NAME="$1"
 PKG_NAME="$2"
 
 # -------------------------
-# Check presence (must use 'which' per requirement)
+# Check presence
 # -------------------------
 if which "$EXEC_NAME" >/dev/null 2>&1; then
-  # Silent success
   exit 0
 fi
 
-# --- Interactive one-time prompt (exact style of the initial version) ---
-# Uses the package name in the message like the original.
-# Note: Keep the trailing space (no newline) behavior.
+# Ask once (interactive)
 echo -e "Package \"${PKG_NAME}\" not found! Install? (y/N) \c"
 read -r REPLY
 if [[ -z "${REPLY}" ]]; then
   REPLY="n"
 fi
 if [[ "${REPLY}" != "y" && "${REPLY}" != "Y" ]]; then
-  # User declined -> exit silently
   exit 0
 fi
 
-# Proceed with unattended installation
+# Install
 DISTRO="$(detect_distro)"
 log_status "[ ] Installing '${PKG_NAME}' for missing '${EXEC_NAME}' on ${DISTRO}..."
 install_package "$DISTRO" "$PKG_NAME" >/dev/null 2>&1 && \
   log_status "\r[${GREEN}${CHECKMARK}${NC}] Installed '${PKG_NAME}'" 1 || \
   { log_status "\r[${RED}${CROSSMARK}${NC}] Failed installing '${PKG_NAME}'" 1; exit 3; }
 
-# Final check: ensure executable now exists
+# Verify
 if which "$EXEC_NAME" >/dev/null 2>&1; then
   exit 0
 else
