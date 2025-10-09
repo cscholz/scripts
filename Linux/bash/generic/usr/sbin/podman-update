@@ -1,0 +1,340 @@
+#!/bin/bash
+# Version=20251001.03
+# Check running podman containers for image updates and (optionally) pull them.
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# -------------------- Formatting --------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+BOLD='\033[1m'
+NOBOLD='\033[0m'
+CHECKMARK="✓"
+CROSSMARK="✗"
+ARROW="↻"
+SKIPMARK="⏭"
+
+# -------------------- Script / Config --------------------
+SCRIPT_NAME="$(basename "$0")"
+CONFIG_NAME="${SCRIPT_NAME%.sh}.conf"
+GLOBAL_CONFIG="/etc/${CONFIG_NAME}"
+USER_CONFIG="$HOME/.config/${CONFIG_NAME}"
+
+# Behavior flags
+debug="0"
+assume_yes="0"
+
+# -------------------- Logging helpers --------------------
+log_status() {
+  local msg="$1"
+  local indent="${2:-0}"
+  local pad=""
+  if [[ "$indent" -gt 0 ]]; then
+    pad="$(printf '%*s' $((indent * 2)) '')"
+  fi
+  echo -e "${pad}${msg}"
+}
+
+debug_msg() {
+  if [[ "$debug" == "1" ]]; then
+    log_status "  ${YELLOW}\$ $*${NC}" 1
+  fi
+}
+
+run_step() {
+  local desc="$1"; shift
+  local cmd=( "$@" )
+  echo -ne "[ ] ${desc}..."
+  if [[ "$debug" == "1" ]]; then
+    echo
+    debug_msg "${cmd[*]}"
+    if "${cmd[@]}"; then
+      log_status "[${GREEN}${CHECKMARK}${NC}] ${desc}" 0
+      return 0
+    else
+      log_status "[${RED}${CROSSMARK}${NC}] ${desc}" 0
+      return 1
+    fi
+  else
+    if "${cmd[@]}" >/dev/null 2>&1; then
+      echo -e "\r[${GREEN}${CHECKMARK}${NC}] ${desc}"
+      return 0
+    else
+      echo -e "\r[${RED}${CROSSMARK}${NC}] ${desc}"
+      return 1
+    fi
+  fi
+}
+
+# -------------------- Required tools --------------------
+checkpackage() {
+  local exec="$1"
+  local pkg="$2"
+  if ! command -v "$exec" >/dev/null 2>&1; then
+    echo -e "${RED}Package \"$pkg\" not found!${NC}"
+    read -p "Install? (y/N) " -r
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      sudo apt-get update
+      sudo apt-get install -y "$pkg"
+    else
+      exit 1
+    fi
+  fi
+}
+
+# -------------------- Config handling --------------------
+check_config_permissions() {
+  local cfg="$1"
+  if [[ -f "$cfg" ]]; then
+    local mode
+    mode=$(stat -c "%a" "$cfg")
+    if [[ "$mode" != "600" ]]; then
+      log_status "[${RED}${CROSSMARK}${NC}] Config file $cfg must have permissions 0600, but has $mode" 1
+      exit 10
+    fi
+  fi
+}
+
+load_config() {
+  if [[ -f "$GLOBAL_CONFIG" ]]; then
+    check_config_permissions "$GLOBAL_CONFIG"
+    # shellcheck disable=SC1090
+    source "$GLOBAL_CONFIG"
+  fi
+  if [[ -f "$USER_CONFIG" ]]; then
+    check_config_permissions "$USER_CONFIG"
+    # shellcheck disable=SC1090
+    source "$USER_CONFIG"
+  fi
+}
+
+# -------------------- Self-update (project standard) --------------------
+run_self_update() {
+    checkpackage wget wget
+    local self="$1"
+    local update_base="$2"
+
+    # Normalize: ensure single trailing slash
+    [[ "$update_base" != */ ]] && update_base="${update_base}/"
+
+    local script_path
+    script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+    local script_name
+    script_name=$(basename "$script_path")
+
+    echo "Performing self-update"
+
+    echo -ne "\r[ ] Downloading latest version..."
+    if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}${self}"; then
+        echo -e "\r[${RED}${CROSSMARK}${NC}] Downloading latest version"
+        echo "[${RED}${CROSSMARK}${NC}] Performing self-update"
+        exit 1
+    fi
+    echo -e "\r[${GREEN}${CHECKMARK}${NC}] Downloading latest version"
+
+    echo -ne "\r[ ] Copying over modes from old version..."
+    local octal_mode
+    octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
+    if ! chmod "$octal_mode" "${script_name}.tmp"; then
+        echo -e "\r[${RED}${CROSSMARK}${NC}] Copying over modes from old version"
+        echo "[${RED}${CROSSMARK}${NC}] Performing self-update"
+        exit 1
+    fi
+    echo -e "\r[${GREEN}${CHECKMARK}${NC}] Copying over modes from old version"
+
+    echo -ne "\r[ ] Start update process..."
+    cat > updateScript.sh <<EOF
+#!/bin/bash
+if mv "${script_name}.tmp" "${script_path}"; then
+    printf "\r\033[0KUpdate complete.\n"
+    rm -f "\${0}"
+else
+    printf "\r\033[0KUpdate failed. Please try again!\n"
+    rm -f "\${0}"
+fi
+EOF
+    chmod +x updateScript.sh
+    exec /bin/bash updateScript.sh
+}
+
+check_self_update() {
+  self=$(basename "${0}")
+  local update_base="${UPDATE_BASE:-https://to_be_set/}"
+  local myself_web_version
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" || true)
+  log_status "Web version: ${myself_web_version:-unknown}" 1
+  local myself_local_version
+  myself_local_version=$(head -2 "${0}" | grep -E -o "([0-9.]{1,4}+)" || true)
+  log_status "Local version: ${myself_local_version:-unknown}" 1
+  if [[ -n "${myself_web_version:-}" && "${myself_web_version}"  > "${myself_local_version:-0}" ]]; then
+    log_status "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}" 1
+    read -p "Update [y/N] " -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      run_self_update "${self}" "${update_base}"
+    fi
+  else
+    log_status "No update available: v.${myself_local_version:-unknown}" 1
+  fi
+}
+
+# -------------------- Usage --------------------
+usage() {
+  cat <<EOF
+${BOLD}${SCRIPT_NAME}${NOBOLD} – Check running podman containers for image updates and optionally pull them.
+
+Usage:
+  ${SCRIPT_NAME} [-y] [-v] [-h]
+
+Options:
+  -y    Assume "yes" to all update prompts (non-interactive).
+  -v    Verbose debug output (echo commands before running).
+  -h    Show this help.
+
+Config:
+  Global: ${GLOBAL_CONFIG}
+  User:   ${USER_CONFIG}
+  User config overrides the global one. Both must be chmod 600.
+
+Notes:
+  - This script PULLS newer images but does NOT restart containers.
+  - Use your systemd units to restart containers when convenient.
+EOF
+}
+
+confirm() {
+  if [[ "$assume_yes" == "1" ]]; then
+    return 0
+  fi
+  read -p "Proceed? (y/N) " -r
+  [[ "$REPLY" =~ ^[Yy]$ ]]
+}
+
+# -------------------- Option parsing --------------------
+while getopts ":yvh" opt; do
+  case "$opt" in
+    y) assume_yes="1" ;;
+    v) debug="1" ;;
+    h) usage; exit 0 ;;
+    \?) echo -e "${RED}Unknown option: -$OPTARG${NC}"; usage; exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# -------------------- Pre-flight --------------------
+checkpackage podman podman
+load_config
+# check_self_update   # optionally enable
+
+# -------------------- Collect running containers --------------------
+if ! mapfile -t RUNNING < <(podman ps --format '{{.Names}}|{{.Image}}|{{.ID}}'); then
+  log_status "[${RED}${CROSSMARK}${NC}] Failed to list running containers"
+  exit 1
+fi
+
+if [[ "${#RUNNING[@]}" -eq 0 ]]; then
+  log_status "[${YELLOW}!${NC}] No running containers found. Nothing to do."
+  exit 0
+fi
+
+# Initial list with empty boxes
+log_status "${BOLD}Found ${#RUNNING[@]} running containers:${NOBOLD}"
+for line in "${RUNNING[@]}"; do
+  IFS="|" read -r cname cimage cid <<<"$line"
+  printf "[ ] %s  (image: %s)\n" "$cname" "$cimage"
+done
+
+# Map images -> containers (many containers can share one image)
+declare -A IMAGE_TO_CONTAINERS
+declare -A CONTAINER_IMAGE
+for line in "${RUNNING[@]}"; do
+  IFS="|" read -r cname cimage cid <<<"$line"
+  IMAGE_TO_CONTAINERS["$cimage"]+="${cname} "
+  CONTAINER_IMAGE["$cname"]="$cimage"
+done
+
+# Image-level results
+declare -A IMAGE_RESULT   # values: up_to_date|updated|skipped|error
+declare -A BEFORE_DIG
+declare -A AFTER_DIG
+
+log_status ""
+log_status "${BOLD}Checking images for updates...${NOBOLD}"
+
+for image in "${!IMAGE_TO_CONTAINERS[@]}"; do
+  old_digest="$(podman image inspect "$image" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null || true)"
+  BEFORE_DIG["$image"]="${old_digest}"
+
+  echo
+  log_status "Image: ${BOLD}${image}${NOBOLD}"
+  log_status "Used by: ${IMAGE_TO_CONTAINERS[$image]}" 1
+
+  echo -n "Pull latest image for '${image}'? "
+  if confirm; then
+    if run_step "Pull latest for ${image}" podman pull "$image"; then
+      new_digest="$(podman image inspect "$image" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' 2>/dev/null || true)"
+      AFTER_DIG["$image"]="${new_digest}"
+
+      if [[ -n "$old_digest" && -n "$new_digest" && "$old_digest" != "$new_digest" ]]; then
+        IMAGE_RESULT["$image"]="updated"
+        log_status "[${GREEN}${CHECKMARK}${NC}] Update downloaded (digest changed)" 1
+        log_status "Digest: ${old_digest} ${YELLOW}->${NC} ${new_digest}" 2
+      else
+        IMAGE_RESULT["$image"]="up_to_date"
+        log_status "[${GREEN}${CHECKMARK}${NC}] Already up to date (no digest change)" 1
+      fi
+    else
+      IMAGE_RESULT["$image"]="error"
+      log_status "[${RED}${CROSSMARK}${NC}] Pull failed" 1
+    fi
+  else
+    IMAGE_RESULT["$image"]="skipped"
+    log_status "[${YELLOW}!${NC}] Skipped pull" 1
+  fi
+done
+
+# -------------------- Final, per-container status list with colored checkboxes --------------------
+log_status ""
+log_status "${BOLD}Results:${NOBOLD}"
+
+updated_count=0
+up_to_date_count=0
+skipped_count=0
+error_count=0
+
+for line in "${RUNNING[@]}"; do
+  IFS="|" read -r cname cimage cid <<<"$line"
+  case "${IMAGE_RESULT[$cimage]:-up_to_date}" in
+    updated)
+      printf "[${YELLOW}%s${NC}] %s  (image: %s)\n" "$ARROW" "$cname" "$cimage"
+      updated_count=$((updated_count+1))
+      ;;
+    skipped)
+      printf "[${YELLOW}%s${NC}] %s  (image: %s)\n" "$SKIPMARK" "$cname" "$cimage"
+      skipped_count=$((skipped_count+1))
+      ;;
+    error)
+      printf "[${RED}%s${NC}] %s  (image: %s)\n" "$CROSSMARK" "$cname" "$cimage"
+      error_count=$((error_count+1))
+      ;;
+    up_to_date|*)
+      printf "[${GREEN}%s${NC}] %s  (image: %s)\n" "$CHECKMARK" "$cname" "$cimage"
+      up_to_date_count=$((up_to_date_count+1))
+      ;;
+  esac
+done
+
+log_status ""
+log_status "${BOLD}Summary${NOBOLD}"
+log_status "- Containers up to date: ${up_to_date_count}" 1
+log_status "- Containers with updates (downloaded): ${updated_count}" 1
+log_status "- Containers skipped: ${skipped_count}" 1
+log_status "- Containers with errors: ${error_count}" 1
+log_status ""
+log_status "Note: Running containers are not restarted by this script." 1
+log_status "      Restart systemd units to run with the new image if needed:" 1
+log_status "      e.g. ${BOLD}systemctl restart container-<name>.service${NOBOLD}" 2
