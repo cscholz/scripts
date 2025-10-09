@@ -1,18 +1,6 @@
 #!/bin/bash
-Version=20221127.01
-
-for i in "$@" ; do
-  if [[ $i == "-V" ]] ; then
-     echo  $(basename "$0") $Version
-
-     echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
-     echo "Dieses Script ist unter GPL v.2. veröffentlicht"
-     echo
-     echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
-     exit 1
-  fi
-done
-
+# Version=20221127.01
+# Extract various archive types with one command.
 
 if [ ! -z "$1" ]; then
   if [ -f "$1" ] ; then
