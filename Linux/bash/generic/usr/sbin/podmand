@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 20251009.12
+# Version=20251009.12
 # Manages systemd units for podman containers namend *.app
 
 set -euo pipefail
