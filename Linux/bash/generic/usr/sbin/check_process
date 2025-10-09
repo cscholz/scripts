@@ -1,5 +1,6 @@
 #!/bin/bash
-Version=20221127.01
+# Version=20251009.01
+# Check if a process is running; if not restartes a systemd unit
 
 for i in "$@" ; do
   if [[ $i == "-V" ]] ; then
