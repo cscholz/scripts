@@ -77,7 +77,7 @@ run_self_update() {
 
     echo "Performing self-update"
 
-    # Download latest version (follow redirects, fail on HTTP errors)
+    # Download latest version
     echo -ne "\r[ ] Downloading latest version..."
     if ! curl -fsSL --retry 3 --output "${script_name}.tmp" "${update_base}${self}"; then
         echo -e "\r[${RED}✗${NC}] Downloading latest version"
@@ -99,15 +99,14 @@ run_self_update() {
     fi
     echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
 
-    # Replace atomically via small helper
+    # Replace atomically via helper (ARGS: <target> <tmpfile>)
     echo -ne "\r[ ] Start update process..."
     cat > updateScript.sh <<'EOF'
 #!/bin/bash
 set -e
-target="$(realpath "$0" 2>/dev/null || echo "$0")"
-name="$(basename "$target")"
-dir="$(dirname "$target")"
-if mv "${dir}/${name}.tmp" "${target}"; then
+target="$1"
+tmp="$2"
+if mv "$tmp" "$target"; then
     printf "\r\033[0KUpdate complete.\n"
     rm -f "$0"
 else
@@ -116,7 +115,7 @@ else
 fi
 EOF
     chmod +x updateScript.sh
-    exec /bin/bash updateScript.sh
+    exec /bin/bash updateScript.sh "$script_path" "${script_name}.tmp"
     # not reached
 }
 
