@@ -1,5 +1,6 @@
 #!/bin/bash
-# Version=20250710.01
+# Version=20251009.01
+# Wrapper for easy borg usage.
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -143,6 +144,7 @@ backup_create() {
     local -a include_paths=("${backup_paths[@]}")
     [[ -n "$include_path" ]] && include_paths=("$include_path")
     [[ ${#include_paths[@]} -eq 0 ]] && include_paths=("/")
+
     if [[ -n "$backup_suffix" ]]; then
         snapshot_name="$(date +"$borg_backup_name_format" | sed 's/^$(date +%Y-%m-%d)-full//')"
         if [[ "$borg_backup_name_format" == *'%'* ]]; then
@@ -153,45 +155,73 @@ backup_create() {
         snapshot_name="${snapshot_name}_${backup_suffix}"
     fi
 
-    # Backup durchführen und Output in Variable speichern
+    # Perform backup and capture output
     local borg_output
     borg_output=$(borg create "${borg_create_opts[@]}" --stats --progress "${repo_path}::${snapshot_name}" "${include_paths[@]}")
     local rc=$?
 
-    # Lock-Fehler erkennen
+    # Lock error
     if [[ $rc -ne 0 && "$borg_output" == *"Failed to create/acquire the lock"* ]]; then
         log_status "[${RED}✗${NC}] Lock present, backup aborted" 1
         if [[ -n "${mail_recipient:-}" ]]; then
-            local subject="$(hostname) lock present, aborted - [${snapshot_name}]"
+            local subject
+            subject="$(hostname) lock present, aborted - [${snapshot_name}]"
             local mailfile
             mailfile=$(tempfile)
-            echo "Backup aborted due to lock present in repository." > "$mailfile"
-            echo "Backup name: ${snapshot_name}" >> "$mailfile"
-            echo "Error output:" >> "$mailfile"
-            echo "$borg_output" >> "$mailfile"
+            {
+                echo "Backup aborted due to repository lock."
+                echo "Repository: ${repo_path}"
+                echo "Backup name: ${snapshot_name}"
+                echo
+                echo "borg output:"
+                echo "$borg_output"
+            } > "$mailfile"
             mail -s "$subject" "${mail_recipient}" < "$mailfile"
             rm -f "$mailfile"
         fi
         exit 2
     elif [[ $rc -eq 0 ]]; then
-        # Erfolg: wie bisher
+        # Success
         log_status "[${GREEN}✓${NC}] Creating backup" 1
         local report_file
         report_file=$(tempfile)
         borg info "${repo_path}::${snapshot_name}" > "$report_file"
         if [[ -n "${mail_recipient:-}" ]]; then
-            local subject="$(hostname) backup - [${snapshot_name}]"
+            local subject
+            subject="$(hostname) backup - [${snapshot_name}]"
             mail -s "$subject" "${mail_recipient}" < "$report_file"
         fi
         if [[ -n "${heartbeat_success_url:-}" ]]; then
-            curl -sS "${heartbeat_success_url}" >/dev/null && log_status "[${GREEN}✓${NC}] Sending heartbeat" 1 || log_status "[${RED}✗${NC}] Sending heartbeat" 1
+            curl -sS "${heartbeat_success_url}" >/dev/null \
+              && log_status "[${GREEN}✓${NC}] Sending heartbeat" 1 \
+              || log_status "[${RED}✗${NC}] Sending heartbeat" 1
         fi
         rm -f "$report_file"
     else
-        # Andere Fehler
+        # Other errors -> NOW also send failure email
         log_status "[${RED}✗${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
+
+        if [[ -n "${mail_recipient:-}" ]]; then
+            local subject mailfile
+            subject="$(hostname) backup FAILED - [${snapshot_name}]"
+            mailfile=$(tempfile)
+            {
+                echo "Backup FAILED."
+                echo "Repository: ${repo_path}"
+                echo "Backup name: ${snapshot_name}"
+                echo "Exit code: ${rc}"
+                echo
+                echo "borg output:"
+                echo "$borg_output"
+            } > "$mailfile"
+            mail -s "$subject" "${mail_recipient}" < "$mailfile"
+            rm -f "$mailfile"
+        fi
+
         if [[ -n "${heartbeat_failure_url:-}" ]]; then
-            curl -sS "${heartbeat_failure_url}" >/dev/null && log_status "[${GREEN}✓${NC}] Sending heartbeat" 1 || log_status "[${RED}✗${NC}] Sending heartbeat" 1
+            curl -sS "${heartbeat_failure_url}" >/dev/null \
+              && log_status "[${GREEN}✓${NC}] Sending heartbeat" 1 \
+              || log_status "[${RED}✗${NC}] Sending heartbeat" 1
         fi
         exit 2
     fi
