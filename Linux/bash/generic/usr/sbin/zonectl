@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251009.01
+# Version=20251010.01
 # Wrapper to manage dns zones
 set -euo pipefail
 
