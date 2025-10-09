@@ -445,7 +445,6 @@ repo_lock_break() {
 }
 
 # --- Self-update functions ---
-# --- Self-update functions ---
 run_self_update() {
     local self="$1"
     local update_base="$2"
