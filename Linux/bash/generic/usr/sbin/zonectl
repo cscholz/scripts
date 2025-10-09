@@ -1,6 +1,6 @@
 #!/bin/bash
 # Version=20251009.01
-
+# Wrapper to manage dns zones
 set -euo pipefail
 
 # --- Colors / Styles ---
