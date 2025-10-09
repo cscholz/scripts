@@ -1,162 +1,265 @@
-#!/usr/bin/env bash
-Version=20201127.01
-
-# Description:  Script could be referenzed from other scripts to check if a required package is installed.
-# It checks if a package is installed. If not it asks if it should be installed.
-
-set -eo pipefail
-# -e: exit immidiately when a command fails. If piped check only the last command error code.
-#     Use ||true for commands allowed to fail.
-# -u: treat unset variable as an error and exit immidiately
-# -o pipefail: same as -e but for all commands in a pipe.
-# -x: debug option
-
-run_self_update() {
-  #######################################
-  # Download a new copy of myself and replace myself with it
-  # Arguments:
-  #   $1 $0 (script name)
-  #   $2 update where the new version is stored
-  # Returns:
-  #   None
-  #######################################
-
-  self=${1}
-
-  # The base location from where to retrieve new versions of this script
-  update_base=${2}
-
-  echo "> Performing self-update..."
-
-  # Download new version
-  echo -n "> Downloading latest version..."
-  if ! wget --quiet --output-document="${0}.tmp" "${update_base}/${self}" ; then
-    echo "Failed: Error while trying to wget new version!"
-    echo "File requested: ${update_base}/${self}"
-    exit 1
-  fi
-  echo "Done."
-
-  # Download MD5 of update
-  echo -n "> Downloading md5 sum..."
-  if ! wget --quiet --output-document="${0}.md5" "${update_base}${self}.md5" ; then
-    echo "Failed: Error while trying to wget md5sum!"
-    echo "File requested: ${update_base}${self}.md5"
-    exit 1
-  fi
-  echo "Done."
-
-  # Checking MD5 sum
-  echo -n "> Checking MD5 sum..."
-  web_md5=$(awk '{print $1}' < "${0}".md5)
-  local_md5=$(md5sum "$(realpath "${0}".tmp)" | awk '{print $1}')
-  if [[ $web_md5 != "${local_md5}" ]]; then
-    echo "Failed. Abort!"
-    echo "${web_md5} / ${local_md5}"
-    rm "${0}.md5"
-    exit 0
-  fi
-  echo "Ok"
-  rm "${0}.md5"
-
-  # Copy over modes from old version
-  OCTAL_MODE=$(stat -c '%a' "$(realpath "${0}")")
-  if ! chmod "${OCTAL_MODE}" "${0}.tmp" ; then
-    echo "Failed: Error while trying to set mode on ${0}.tmp."
-    exit 1
-  fi
-
-  # Spawn update script
-  cat > updateScript.sh << EOF
 #!/bin/bash
-# Overwrite old file with new
-if mv "${0}.tmp" "${0}"; then
-  echo "Done. Update complete."
-  rm \${0}
+# Version=20251009.02
+# Checs for executable; if missing, related package is installed.
+
+set -euo pipefail
+
+# -------------------------
+# Colors & formatting
+# -------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+BOLD='\033[1m'
+NOBOLD='\033[0m'
+CHECKMARK="✓"
+CROSSMARK="✗"
+
+# -------------------------
+# Script & config paths
+# -------------------------
+SCRIPT_NAME="$(basename "$0")"
+CONFIG_NAME="${SCRIPT_NAME%.sh}.conf"
+GLOBAL_CONFIG="/etc/${CONFIG_NAME}"
+USER_CONFIG="$HOME/.config/${CONFIG_NAME}"
+
+# -------------------------
+# Logging helpers
+# -------------------------
+log_status() {
+  local msg="$1"
+  local newline="${2:-0}" # 0 = no newline, 1 = newline
+  if [[ "$newline" == "1" ]]; then
+    echo -e "\r$msg"
+  else
+    echo -ne "\r$msg"
+  fi
+}
+
+debug=0
+debug_msg() {
+  if [[ "$debug" == "1" ]]; then
+    log_status "  ${YELLOW}\$ $*${NC}" 1
+  fi
+}
+
+# -------------------------
+# Config permission check
+# -------------------------
+check_config_permissions() {
+  local cfg="$1"
+  if [[ -f "$cfg" ]]; then
+    local mode
+    mode=$(stat -c "%a" "$cfg")
+    if [[ "$mode" != "600" ]]; then
+      log_status "[${RED}${CROSSMARK}${NC}] Config file $cfg must have permissions 0600, but has $mode" 1
+      exit 10
+    fi
+  fi
+}
+
+# Load configs (global then user)
+[[ -f "$GLOBAL_CONFIG" ]] && check_config_permissions "$GLOBAL_CONFIG" && source "$GLOBAL_CONFIG"
+[[ -f "$USER_CONFIG"  ]] && check_config_permissions "$USER_CONFIG"  && source "$USER_CONFIG"
+
+# -------------------------
+# Self-update (optional)
+# -------------------------
+run_self_update() {
+  local self="$1"
+  local update_base="${2:-${UPDATE_BASE:-https://to_be_set/}}"
+  local script_path
+  script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+  local script_name
+  script_name=$(basename "$script_path")
+
+  echo "Performing self-update"
+
+  echo -ne "\r[ ] Downloading latest version..."
+  if ! wget --quiet --output-document="${script_name}.tmp" "${update_base}/${self}"; then
+    echo -e "\r[${RED}✗${NC}] Downloading latest version"
+    echo "[${RED}✗${NC}] Performing self-update"
+    exit 1
+  fi
+  echo -e "\r[${GREEN}✓${NC}] Downloading latest version"
+
+  echo -ne "\r[ ] Copying over modes from old version..."
+  local octal_mode
+  octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
+  if ! chmod "$octal_mode" "${script_name}.tmp"; then
+    echo -e "\r[${RED}✗${NC}] Copying over modes from old version"
+    echo "[${RED}✗${NC}] Performing self-update"
+    exit 1
+  fi
+  echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
+
+  echo -ne "\r[ ] Start update process..."
+  cat > updateScript.sh <<'EOF'
+#!/bin/bash
+script_name="$(basename "${0}")"
+target="${script_name}"
+if mv "${target}.tmp" "${target}"; then
+  printf "\r\033[0KUpdate complete.\n"
+  rm -f "${0}"
 else
-  echo "Failed. Please try again!"
-  rm \${0}
+  printf "\r\033[0KUpdate failed. Please try again!\n"
+  rm -f "${0}"
 fi
 EOF
-
-  echo -n "> Start update process..."
+  chmod +x updateScript.sh
   exec /bin/bash updateScript.sh
 }
 
 check_self_update() {
-  #######################################
-  # Check for a new version of myself
-  # Arguments:
-  #   $1 $0 (script name)
-  # Returns:
-  #   None
-  #######################################
-
+  local self
   self=$(basename "${0}")
-  # The base location from where to retrieve new versions of this script
-  local update_base=https://raw.githubusercontent.com/cscholz/scripts/master/Linux/bash/generic/usr/sbin/
-
+  local update_base="${UPDATE_BASE:-https://to_be_set/}"
   local myself_web_version
-  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9.]{1,4}+\.[0-9.]{1,2})" )
-  echo "Web:" "${myself_web_version}"
-  myself_local_version=$(head -2 "${0}"  | grep -E -o "([0-9.]{1,4}+)")
-  echo "Local:" "${myself_local_version}"
-  if [[ "${myself_web_version}"  > "${myself_local_version}" ]]; then
-    echo -e "\033[40;1;33mNew version (v.${myself_local_version} -> v.${myself_web_version}) available.\033[0m"
-          read -p "Update (y/N) " -r
-    echo    # (optional) move to a new line
-    if [[ $REPLY =~ ^[Yy]$ ]]
-    then
+  myself_web_version=$(curl -s -r 0-50 "${update_base}${self}" | head -2 | grep -E -o "([0-9]{8}\.[0-9]{2})")
+  log_status "Web version: ${myself_web_version}" 1
+  local myself_local_version
+  myself_local_version=$(head -n 3 "${0}" | grep -E -o "([0-9]{8}\.[0-9]{2})" | head -n1)
+  log_status "Local version: ${myself_local_version}" 1
+  if [[ -n "${myself_web_version}" && "${myself_web_version}"  > "${myself_local_version}" ]]; then
+    log_status "${YELLOW}New version v.${myself_local_version} to v.${myself_web_version} available.${NC}" 1
+    read -p "Update [y/N] " -r
+    echo
+    if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
       run_self_update "${self}" "${update_base}"
     fi
   else
-          echo "No update available (v.${myself_local_version})"
-        fi
-}
-
-main() {
-  for i in "$@" ; do
-    if [[ "${i}" == "-V" ]] ; then
-       echo  "$(basename "${0}")" "${Version}"
-
-       echo "Copyright (C) 2017 Christian Scholz. Alle Rechte vorbehalten."
-       echo "Dieses Script ist unter GPL v.2. veröffentlicht"
-       echo
-       echo "Dieses Script wird unter Ausschluss vom Gewährleistung und Garantie bereitgestellt, soweit dies durch Gesetze ermöglicht wird."
-       exit 1
-    fi
-    if [[ "${i}" == "-u" ]] ; then
-      check_self_update
-      exit 1
-    fi
-  done
-
-  OSTYPE=$(lsb_release -si | cut -d " " -f 1 |  tr '[:upper:]' '[:lower:]')
-
-  if [ -n "${1}" ] ; then
-    REPLY="n"
-    if ! which "${1}" > /dev/null 2>&1;  then
-      echo -e "Package \"$1\" not found! Install? (y/N) \c"
-      read -r REPLY
-
-      if [ -z "${REPLY}" ]; then
-        REPLY="n"
-      fi
-      if [ "${REPLY}" = "y" ]; then
-
-  case "${OSTYPE}" in
-    debian*) sudo apt-get install "${1}" ;;
-    opensuse*)  sudo zypper in "${1}" ;;
-    fedora*) sudo dnf install "${1}" ;;
-    *)        echo "unknown: ${OSTYPE}" ;;
-  esac
-      else
-        exit
-      fi
-    fi
-  else
-    echo "!! Package name necessarry"
+    log_status "No update available: v.${myself_local_version}" 1
   fi
 }
 
-main "$@"
+# -------------------------
+# Distro detection & install
+# -------------------------
+detect_distro() {
+  local id like
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    id="${ID:-}"; like="${ID_LIKE:-}"
+    if [[ "$id" =~ (debian|ubuntu) || "$like" =~ debian ]]; then
+      echo debian; return
+    fi
+    if [[ "$id" =~ (opensuse|suse|sles) || "$like" =~ suse ]]; then
+      echo suse; return
+    fi
+    if [[ "$id" =~ arch || "$like" =~ arch ]]; then
+      echo arch; return
+    fi
+  fi
+  if command -v apt-get >/dev/null 2>&1; then echo debian; return; fi
+  if command -v zypper  >/dev/null 2>&1; then echo suse;   return; fi
+  if command -v pacman  >/dev/null 2>&1; then echo arch;   return; fi
+  echo unknown
+}
+
+install_package() {
+  local distro="$1"
+  local pkg="$2"
+  case "$distro" in
+    debian)
+      export DEBIAN_FRONTEND=noninteractive
+      debug_msg "sudo apt-get update"
+      sudo apt-get update -y >/dev/null
+      debug_msg "sudo apt-get install -y \"$pkg\""
+      sudo apt-get install -y "$pkg"
+      ;;
+    suse)
+      debug_msg "sudo zypper --non-interactive install -y \"$pkg\""
+      sudo zypper --non-interactive install -y "$pkg"
+      ;;
+    arch)
+      debug_msg "sudo pacman -Sy --noconfirm \"$pkg\""
+      sudo pacman -Sy --noconfirm "$pkg"
+      ;;
+    *)
+      log_status "[${RED}${CROSSMARK}${NC}] Unsupported distribution for auto-install." 1
+      exit 2
+      ;;
+  esac
+}
+
+# -------------------------
+# Usage / help
+# -------------------------
+print_usage() {
+  cat <<EOF
+${BOLD}Usage:${NOBOLD} ${SCRIPT_NAME} [options] <executable> <package>
+
+Checks if <executable> exists (via 'which'). If not, asks once:
+"Package \"<package>\" not found! Install? (y/N)"
+If yes, installs <package> non-interactively using the distro's package manager
+(Debian/Ubuntu: apt-get, openSUSE: zypper, Arch: pacman).
+
+${BOLD}Options:${NOBOLD}
+  -v            Enable debug output
+  -h            Show this help
+  -u            Self-update (uses \$UPDATE_BASE)
+
+${BOLD}Example:${NOBOLD}
+  ${SCRIPT_NAME} nsupdate dnsutils
+EOF
+}
+
+# -------------------------
+# Arg parsing
+# -------------------------
+while getopts ":vhu" opt; do
+  case "$opt" in
+    v) debug=1 ;;
+    h) print_usage; exit 0 ;;
+    u) check_self_update; exit 0 ;;
+    \?) echo -e "${RED}Unknown option: -$OPTARG${NC}"; print_usage; exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# Require 2 args
+if [[ $# -lt 2 ]]; then
+  print_usage
+  exit 1
+fi
+
+EXEC_NAME="$1"
+PKG_NAME="$2"
+
+# -------------------------
+# Check presence (must use 'which' per requirement)
+# -------------------------
+if which "$EXEC_NAME" >/dev/null 2>&1; then
+  # Silent success
+  exit 0
+fi
+
+# --- Interactive one-time prompt (exact style of the initial version) ---
+# Uses the package name in the message like the original.
+# Note: Keep the trailing space (no newline) behavior.
+echo -e "Package \"${PKG_NAME}\" not found! Install? (y/N) \c"
+read -r REPLY
+if [[ -z "${REPLY}" ]]; then
+  REPLY="n"
+fi
+if [[ "${REPLY}" != "y" && "${REPLY}" != "Y" ]]; then
+  # User declined -> exit silently
+  exit 0
+fi
+
+# Proceed with unattended installation
+DISTRO="$(detect_distro)"
+log_status "[ ] Installing '${PKG_NAME}' for missing '${EXEC_NAME}' on ${DISTRO}..."
+install_package "$DISTRO" "$PKG_NAME" >/dev/null 2>&1 && \
+  log_status "\r[${GREEN}${CHECKMARK}${NC}] Installed '${PKG_NAME}'" 1 || \
+  { log_status "\r[${RED}${CROSSMARK}${NC}] Failed installing '${PKG_NAME}'" 1; exit 3; }
+
+# Final check: ensure executable now exists
+if which "$EXEC_NAME" >/dev/null 2>&1; then
+  exit 0
+else
+  log_status "[${RED}${CROSSMARK}${NC}] '${EXEC_NAME}' still not found after installation." 1
+  exit 4
+fi
