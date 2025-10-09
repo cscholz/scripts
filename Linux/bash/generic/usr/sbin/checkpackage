@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251009.03
+# Version=20251009.04
 # Ensure an executable exists; if missing, ask once and then install the given package non-interactively.
 
 set -euo pipefail
@@ -180,7 +180,7 @@ install_package() {
   case "$distro" in
     debian)
       export DEBIAN_FRONTEND=noninteractive
-      sudo apt-get update -y >/dev/null
+      sudo apt-get update -y
       sudo apt-get install -y "$pkg"
       ;;
     suse)
