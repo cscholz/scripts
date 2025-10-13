@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251009.02
+# Version=20251013.01
 # Wrapper for easy borg usage.
 
 GREEN='\033[0;32m'
@@ -185,6 +185,7 @@ backup_create() {
             rm -f "$mailfile"
         fi
         exit 2
+
     elif [[ $rc -eq 0 ]]; then
         # Success
         log_status "[${GREEN}✓${NC}] Creating backup" 1
@@ -202,10 +203,35 @@ backup_create() {
               || log_status "[${RED}✗${NC}] Sending heartbeat" 1
         fi
         rm -f "$report_file"
-    else
-        # Other errors -> NOW also send failure email
-        log_status "[${RED}✗${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
 
+    elif [[ $rc -eq 1 ]]; then
+        # Success with warnings (e.g., "file changed while we backed it up")
+        log_status "[${YELLOW}!${NC}] Creating backup completed with warnings" 1
+        if [[ -n "${mail_recipient:-}" ]]; then
+            local subject
+            subject="$(hostname) backup (warnings) - [${snapshot_name}]"
+            local mailfile
+            mailfile=$(tempfile)
+            {
+                borg info "${repo_path}::${snapshot_name}" || true
+                echo
+                echo "Warnings (excerpt):"
+                # give some context; borg_output may be large, but we keep it simple/minimal
+                printf "%s\n" "$borg_output" | grep -E "file changed while we backed it up|Warning" || echo "(no specific warning lines captured)"
+            } > "$mailfile"
+            mail -s "$subject" "${mail_recipient}" < "$mailfile"
+            rm -f "$mailfile"
+        fi
+        # Treat warnings as overall success for heartbeat
+        if [[ -n "${heartbeat_success_url:-}" ]]; then
+            curl -sS "${heartbeat_success_url}" >/dev/null \
+              && log_status "[${GREEN}✓${NC}] Sending heartbeat" 1 \
+              || log_status "[${RED}✗${NC}] Sending heartbeat" 1
+        fi
+
+    else
+        # Hard failure
+        log_status "[${RED}✗${NC}] Creating backup (suffix: ${backup_suffix:-${default_backup_prefix:-none}})" 1
         if [[ -n "${mail_recipient:-}" ]]; then
             local subject mailfile
             subject="$(hostname) backup FAILED - [${snapshot_name}]"
@@ -222,7 +248,6 @@ backup_create() {
             mail -s "$subject" "${mail_recipient}" < "$mailfile"
             rm -f "$mailfile"
         fi
-
         if [[ -n "${heartbeat_failure_url:-}" ]]; then
             curl -sS "${heartbeat_failure_url}" >/dev/null \
               && log_status "[${GREEN}✓${NC}] Sending heartbeat" 1 \
