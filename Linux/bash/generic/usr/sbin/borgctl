@@ -1,6 +1,6 @@
 #!/bin/bash
-# Version=20251013.19
-# Wrapper for easy borg usage.
+# Version=20251014.02
+# Wrapper for easy borg usage - Fixed relocated repo handling
 
 #====================[ exit codes ]====================
 # Standardized exit codes for error handling
@@ -169,21 +169,42 @@ if [[ "$config_loaded" -eq 0 ]]; then
     exit "$EXIT_CONFIG_ERROR"
 fi
 
-# Export borg environment variable if set in config
-if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
-    export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
-fi
-
 # Validate required configuration variables
 if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
     log_status "[${RED}${CROSSMARK}${NC}] No valid configuration found!" 1
     exit "$EXIT_CONFIG_ERROR"
 fi
 
+# Validate and export borg passphrase early
+if [[ -z "${borg_passphrase:-}" ]] || [[ "${borg_passphrase}" =~ ^[[:space:]]*$ ]]; then
+    log_status "[${RED}${CROSSMARK}${NC}] borg_passphrase is empty or not set in config!" 1
+    exit "$EXIT_CONFIG_ERROR"
+fi
+export BORG_PASSPHRASE="${borg_passphrase}"
+
+# Export borg environment variables early so they're available for all operations
+if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+    export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
+    if [[ "$debug" == "1" ]]; then
+        debug_msg "BORG_RELOCATED_REPO_ACCESS_IS_OK=yes (from config)"
+    fi
+fi
+
+# Validate SSH key exists before building BORG_RSH
+if [[ ! -f "${ssh_remote_authfile:-}" ]]; then
+    log_status "[${RED}${CROSSMARK}${NC}] SSH key file not found: ${ssh_remote_authfile:-'(not set)'}" 1
+    exit "$EXIT_CONFIG_ERROR"
+fi
+
+# Build and export BORG_RSH early
+export BORG_RSH="ssh -p ${ssh_remote_port:-22} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
+
 # Validate compression setting (default to lz4 if not set or invalid)
 if [[ -z "${compression:-}" ]]; then
     compression="lz4"
-    debug_msg "Compression not set, defaulting to: ${compression}"
+    if [[ "$debug" == "1" ]]; then
+        debug_msg "Compression not set, defaulting to: ${compression}"
+    fi
 fi
 
 # Validate minimum borg version if set in config
@@ -307,38 +328,25 @@ check_backup_paths() {
     return "$EXIT_SUCCESS"
 }
 
-# Validate passphrase is set
-check_passphrase() {
-    if [[ -z "${borg_passphrase:-}" ]] || [[ "${borg_passphrase}" =~ ^[[:space:]]*$ ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] borg_passphrase is empty or not set in config!" 1
-        return "$EXIT_CONFIG_ERROR"
-    fi
-
-    debug_msg "Passphrase is set (length: ${#borg_passphrase})"
-    return "$EXIT_SUCCESS"
-}
-
-# Initialize borg environment variables
+# Initialize borg environment variables and other runtime settings
 set_variables() {
     local job_name="${1:-full}"
 
     if [[ "$variables_initialized" == false ]]; then
         check_borg_version || exit "$EXIT_GENERAL_ERROR"
-        check_passphrase || exit "$EXIT_CONFIG_ERROR"
         check_ssh_key_permissions || exit "$EXIT_CONFIG_ERROR"
 
-        export BORG_PASSPHRASE="${borg_passphrase}"
-        export BORG_RSH="ssh -p ${ssh_remote_port} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
-
-        if [[ ! -f "${ssh_remote_authfile}" ]]; then
-            log_status "[${RED}${CROSSMARK}${NC}] SSH key file not found: ${ssh_remote_authfile}" 1
-            exit "$EXIT_CONFIG_ERROR"
-        fi
+        # Note: BORG_PASSPHRASE, BORG_RSH, and BORG_RELOCATED_REPO_ACCESS_IS_OK
+        # are now exported early during config loading, so they're available for all operations
 
         temp=$(tempfile)
         variables_initialized=true
         log_status "[${GREEN}${CHECKMARK}${NC}] Setting variables" 1
         debug_msg "BORG_RSH=${BORG_RSH}"
+        debug_msg "BORG_PASSPHRASE=(set, length: ${#BORG_PASSPHRASE})"
+        if [[ -n "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-}" ]]; then
+            debug_msg "BORG_RELOCATED_REPO_ACCESS_IS_OK=${BORG_RELOCATED_REPO_ACCESS_IS_OK}"
+        fi
         debug_msg "temp=${temp}"
     fi
 
@@ -397,8 +405,22 @@ repo_preflight() {
   log_status "[ ] Repository reachability check"
 
   local timeout_val="${borg_operation_timeout:-300}"
+  local tmpout
+  tmpout=$(tempfile)
 
-  if timeout "$timeout_val" borg info "$repo_path" >/dev/null 2>&1; then
+  timeout "$timeout_val" borg info "$repo_path" >"$tmpout" 2>&1
+  local rc=$?
+
+  # Check if error is due to relocated repository
+  if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$tmpout"; then
+    if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+      # Relocated repo is accepted, treat as success
+      debug_msg "Repository ID mismatch detected but BORG_RELOCATED_REPO_ACCESS_IS_OK=yes, continuing"
+      rc=0
+    fi
+  fi
+
+  if [[ $rc -eq 0 ]]; then
     log_status "[${GREEN}${CHECKMARK}${NC}] Repository reachability check" 1
     return "$EXIT_SUCCESS"
   else
@@ -701,6 +723,15 @@ backup_list_and_mail() {
     borg list "$repo_path" > "$mailfile" 2>&1
     local rc=$?
 
+    # Check if error is due to relocated repository
+    if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$mailfile"; then
+        if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+            # Relocated repo is accepted, treat as success
+            debug_msg "Repository ID mismatch detected but BORG_RELOCATED_REPO_ACCESS_IS_OK=yes, continuing"
+            rc=0
+        fi
+    fi
+
     cat "$mailfile"
 
     if [[ $rc -eq 0 ]]; then
@@ -769,15 +800,26 @@ backup_mount() {
 
 # Interactive archive selection for mount/delete operations
 select_archive_interactive() {
-    local Operation
-local operation="$1"
+    local operation="$1"
     acquire_run_lock
     set_variables "full"
 
     log_status "[ ] Fetching archive list..." 1
 
+    local tmpout
+    tmpout=$(tempfile)
     local archives
-    mapfile -t archives < <(borg list --short "$repo_path" 2>/dev/null)
+    mapfile -t archives < <(borg list --short "$repo_path" 2>"$tmpout")
+    local rc=$?
+
+    # Check if error is due to relocated repository
+    if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$tmpout"; then
+        if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+            # Relocated repo is accepted, retry without error redirection
+            debug_msg "Repository ID mismatch detected but BORG_RELOCATED_REPO_ACCESS_IS_OK=yes, retrying"
+            mapfile -t archives < <(borg list --short "$repo_path" 2>&1 | grep -v "cache\|security\|newer\|multiple repos")
+        fi
+    fi
 
     if [[ ${#archives[@]} -eq 0 ]]; then
         log_status "[${RED}${CROSSMARK}${NC}] No archives found in repository" 1
@@ -915,8 +957,19 @@ repo_info() {
     set_variables "full"
     log_status "[ ] Retrieving repository info" 1
 
-    borg info "$repo_path"
-    local rc=$?
+    local tmpout
+    tmpout=$(tempfile)
+    borg info "$repo_path" 2>&1 | tee "$tmpout"
+    local rc=${PIPESTATUS[0]}
+
+    # Check if error is due to relocated repository
+    if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$tmpout"; then
+        if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+            # Relocated repo is accepted, treat as success
+            debug_msg "Repository ID mismatch detected but BORG_RELOCATED_REPO_ACCESS_IS_OK=yes, continuing"
+            rc=0
+        fi
+    fi
 
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}${CHECKMARK}${NC}] Retrieving repository info" 1
@@ -948,19 +1001,89 @@ repo_health_check() {
     return "$EXIT_SUCCESS"
 }
 
-# Perform repository maintenance (prune + compact)
+# Perform repository maintenance (prune + compact) with detailed reporting
 repo_maintain() {
     acquire_run_lock
     set_variables "full"
 
+    local mailfile
+    mailfile=$(tempfile)
+    local prune_output
+    prune_output=$(tempfile)
+
+    # Get repository size before maintenance
+    log_status "[ ] Gathering repository statistics" 1
+    local repo_info_before
+    repo_info_before=$(tempfile)
+    borg info "$repo_path" > "$repo_info_before" 2>&1
+
+    local rc=$?
+
+    # Check for repository ID mismatch warning
+    if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$repo_info_before"; then
+        if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+            # Variable is set, just log debug message and continue silently
+            debug_msg "Repository ID mismatch detected but BORG_RELOCATED_REPO_ACCESS_IS_OK=yes, continuing"
+        else
+            # Variable not set, show warning and ask user
+            log_status "[${YELLOW}!${NC}] Repository ID mismatch detected" 1
+            echo
+            echo -e "${YELLOW}WARNING: Repository cache/security info mismatch detected.${NC}"
+            echo "This usually happens when:"
+            echo "  • Repository was moved/copied/restored"
+            echo "  • Repository ID changed on remote server"
+            echo "  • Multiple repositories share the same ID"
+            echo
+            echo "Solutions:"
+            echo "  1. If this is safe (same repo, different location):"
+            echo "     Add to your config: BORG_RELOCATED_REPO_ACCESS_IS_OK=\"yes\""
+            echo
+            echo "  2. Or clear the cache once:"
+            echo "     rm -rf ~/.cache/borg/*"
+            echo "     rm -rf ~/.config/borg/security/*"
+            echo
+            read -rp "Continue anyway for this run? (yes/NO): " confirm
+            if [[ "$confirm" != "yes" ]]; then
+                log_status "[${YELLOW}!${NC}] Maintenance cancelled by user" 1
+                return "$EXIT_USER_ABORT"
+            fi
+            # Set for this run only
+            export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
+            log_status "[${YELLOW}!${NC}] Continuing with relocated repo access enabled" 1
+
+            # Retry info
+            borg info "$repo_path" > "$repo_info_before" 2>&1
+        fi
+    fi
+
+    # Extract size using multiple methods for robustness
+    local size_before
+    # Try method 1: Look for "All archives" line
+    size_before=$(grep "All archives:" "$repo_info_before" | grep -o "Compressed size:.*" | sed 's/Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | head -1 | tr -d '\n')
+
+    # Try method 2: Look for any "Compressed size" line if method 1 failed
+    if [[ -z "$size_before" ]]; then
+        size_before=$(grep "Compressed size:" "$repo_info_before" | head -1 | sed 's/.*Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
+    fi
+
+    if [[ -z "$size_before" ]]; then
+        size_before="Unknown"
+    fi
+
+    debug_msg "Repository size before: ${size_before}"
+    log_status "[${GREEN}${CHECKMARK}${NC}] Gathering repository statistics" 1
+
+    # Prune old backups
     log_status "[ ] Pruning old backups" 1
-    run_cmd borg prune "$repo_path" -v --list \
+
+    borg prune "$repo_path" -v --list \
         --keep-within="${borg_keep_within:-6m}" \
         --keep-daily="${borg_keep_daily:-7}" \
         --keep-weekly="${borg_keep_weekly:-12}" \
         --keep-monthly="${borg_keep_monthly:-12}" \
-        --keep-yearly="${borg_keep_yearly:-3}"
-    local rc=$?
+        --keep-yearly="${borg_keep_yearly:-3}" 2>&1 | tee "$prune_output"
+
+    rc=$?
 
     if [[ $rc -eq 0 ]]; then
         log_status "[${GREEN}${CHECKMARK}${NC}] Pruning old backups" 1
@@ -969,10 +1092,25 @@ repo_maintain() {
         return "$EXIT_BORG_ERROR"
     fi
 
+    # Extract pruned archives from output (with proper cleanup)
+    local pruned_count
+    pruned_count=$(grep -c "Pruning archive" "$prune_output" 2>/dev/null || echo "0")
+    # Remove any newlines/whitespace and leading zeros
+    pruned_count=$(echo "$pruned_count" | tr -d '\n\r' | xargs | sed 's/^0*//')
+    # Handle empty string (becomes "0")
+    pruned_count=${pruned_count:-0}
+
+    debug_msg "Pruned archives: ${pruned_count}"
+
+    # Compact repository
     log_status "[ ] Compacting repository" 1
     local threshold="${borg_compact_threshold:-10}"
     debug_msg "Using compaction threshold: ${threshold}%"
-    run_cmd borg compact "$repo_path" -v --threshold "$threshold" --progress
+
+    local compact_output
+    compact_output=$(tempfile)
+
+    borg compact "$repo_path" -v --threshold "$threshold" --progress 2>&1 | tee "$compact_output"
     rc=$?
 
     if [[ $rc -eq 0 ]]; then
@@ -980,6 +1118,133 @@ repo_maintain() {
     else
         log_status "[${RED}${CROSSMARK}${NC}] Compacting repository" 1
         return "$EXIT_BORG_ERROR"
+    fi
+
+    # Extract space saved directly from compact output
+    log_status "[ ] Calculating space savings" 1
+
+    local space_saved="Unknown"
+    local space_freed=""
+
+    # Look for various patterns in compact output
+    # Pattern 1: "Freed: X.XX GB"
+    space_freed=$(grep -i "freed" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
+
+    if [[ -z "$space_freed" ]]; then
+        # Pattern 2: "X.XX GB freed" or "saved X.XX GB"
+        space_freed=$(grep -iE "saved|freed|compaction.*[0-9]" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
+    fi
+
+    if [[ -z "$space_freed" ]]; then
+        # Pattern 3: Look in "Compaction saved" line
+        space_freed=$(grep -i "compaction saved" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
+    fi
+
+    if [[ -n "$space_freed" ]]; then
+        space_saved="$space_freed"
+    else
+        # Check if compaction was skipped
+        if grep -qi "compaction not necessary\|not enough segments\|below threshold" "$compact_output"; then
+            space_saved="0 B (compaction not necessary)"
+        else
+            space_saved="0 B (no space freed)"
+        fi
+    fi
+
+    debug_msg "Space saved from compact: ${space_saved}"
+
+    # Get repository size after maintenance (for reference)
+    local repo_info_after
+    repo_info_after=$(tempfile)
+    borg info "$repo_path" > "$repo_info_after" 2>&1
+
+    # Extract size using same methods
+    local size_after
+    size_after=$(grep "All archives:" "$repo_info_after" | grep -o "Compressed size:.*" | sed 's/Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | head -1 | tr -d '\n')
+
+    if [[ -z "$size_after" ]]; then
+        size_after=$(grep "Compressed size:" "$repo_info_after" | head -1 | sed 's/.*Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
+    fi
+
+    if [[ -z "$size_after" ]]; then
+        size_after="Unknown"
+    fi
+
+    debug_msg "Repository size after: ${size_after}"
+    log_status "[${GREEN}${CHECKMARK}${NC}] Calculating space savings" 1
+
+    # Display results
+    echo
+    echo "======================================"
+    echo "Repository Maintenance Summary"
+    echo "======================================"
+    echo "Archives pruned:     ${pruned_count}"
+    echo "Size before:         ${size_before}"
+    echo "Size after:          ${size_after}"
+    echo "Space saved:         ${space_saved}"
+    echo "======================================"
+    echo
+
+    # Prepare and send email notification
+    if [[ -n "${mail_recipient:-}" ]]; then
+        log_status "[ ] Sending email notification"
+
+        {
+            echo "Borg Repository Maintenance Report"
+            echo "==================================="
+            echo
+            echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "Hostname: $(hostname)"
+            echo "Repository: ${repo_path}"
+            echo
+            echo "======================================"
+            echo "Maintenance Summary"
+            echo "======================================"
+            echo
+            echo "Archives pruned:     ${pruned_count}"
+            echo "Size before:         ${size_before}"
+            echo "Size after:          ${size_after}"
+            echo "Space saved:         ${space_saved}"
+            echo
+            echo "======================================"
+            echo "Pruned Archives"
+            echo "======================================"
+            echo
+            # Use string comparison
+            if [[ "${pruned_count}" != "0" && -n "${pruned_count}" ]]; then
+                grep "Pruning archive" "$prune_output" | sed 's/^/  /' || echo "  (details not available)"
+            else
+                echo "  No archives were pruned"
+            fi
+            echo
+            echo "======================================"
+            echo "Retention Policy"
+            echo "======================================"
+            echo
+            echo "Keep within:    ${borg_keep_within:-6m}"
+            echo "Keep daily:     ${borg_keep_daily:-7}"
+            echo "Keep weekly:    ${borg_keep_weekly:-12}"
+            echo "Keep monthly:   ${borg_keep_monthly:-12}"
+            echo "Keep yearly:    ${borg_keep_yearly:-3}"
+            echo
+            echo "======================================"
+            echo "Compact Output"
+            echo "======================================"
+            echo
+            cat "$compact_output"
+            echo
+            echo "======================================"
+            echo "Repository Statistics (After)"
+            echo "======================================"
+            echo
+            cat "$repo_info_after"
+            echo
+        } > "$mailfile"
+
+        local subject="$(hostname) borg MAINTENANCE - [${repo_name}] - Saved: ${space_saved}"
+        send_mail_notification "$subject" "$mailfile"
+
+        log_status "[${GREEN}${CHECKMARK}${NC}] Sending email notification" 1
     fi
 
     return "$EXIT_SUCCESS"
@@ -1090,6 +1355,7 @@ heartbeat_failure_url="https://hc-ping.com/your-uuid/fail"
 
 borg_mount_point="/mnt/borgbackup_mount"
 
+# Uncomment the following line if repository was moved/relocated:
 # BORG_RELOCATED_REPO_ACCESS_IS_OK="yes"
 EOF
 }
@@ -1218,8 +1484,8 @@ config_check_command() {
     fi
 
     echo -n "Checking borg_passphrase... "
-    if check_passphrase 2>/dev/null; then
-        echo -e "${GREEN}✓${NC} Set (length: ${#borg_passphrase})"
+    if [[ -n "${BORG_PASSPHRASE:-}" ]] && [[ ! "${BORG_PASSPHRASE}" =~ ^[[:space:]]*$ ]]; then
+        echo -e "${GREEN}✓${NC} Set (length: ${#BORG_PASSPHRASE})"
     else
         echo -e "${RED}✗${NC} Not set or empty"
         ((errors++))
@@ -1238,6 +1504,21 @@ config_check_command() {
     else
         echo -e "${RED}✗${NC} Not found: ${ssh_remote_authfile}"
         ((errors++))
+    fi
+
+    echo -n "Checking BORG_RSH... "
+    if [[ -n "${BORG_RSH:-}" ]]; then
+        echo -e "${GREEN}✓${NC} Exported"
+    else
+        echo -e "${RED}✗${NC} Not exported"
+        ((errors++))
+    fi
+
+    echo -n "Checking BORG_RELOCATED_REPO_ACCESS_IS_OK... "
+    if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+        echo -e "${GREEN}✓${NC} Enabled (relocated repo access allowed)"
+    else
+        echo -e "${BLUE}i${NC} Not set (default behavior)"
     fi
 
     echo "Checking backup paths..."
@@ -1301,7 +1582,16 @@ config_check_command() {
 show_readme() {
     cat <<'EOF'
 # borgctl - Borg Backup Wrapper Script
-Version 20251013.19
+Version 20251014.02
+
+## Changes in This Version
+- Fixed: BORG_RELOCATED_REPO_ACCESS_IS_OK is now properly respected in ALL functions
+- When BORG_RELOCATED_REPO_ACCESS_IS_OK="yes" is set in config:
+  * No warnings are shown for repository ID mismatches
+  * All operations proceed silently (only debug messages in -v mode)
+  * Repository is treated as valid without user interaction
+- Fixed in functions: backup_list, repo_info, repo_maintain, repo_preflight, select_archive_interactive
+- Previous fix: Environment variables are exported immediately after config loading
 
 ## Features
 - Automated backup creation with compression and deduplication
@@ -1322,6 +1612,12 @@ Version 20251013.19
 4. chmod 600 ~/.config/borgctl.conf
 5. ./borgctl.sh config-check
 6. ./borgctl.sh repo init
+
+## Configuration
+Important: If your repository was moved or relocated, add to your config:
+BORG_RELOCATED_REPO_ACCESS_IS_OK="yes"
+
+This will suppress all repository ID mismatch warnings and allow operations to proceed automatically.
 
 ## Exit Codes
 0=Success, 1=General, 2=Config, 3=SSH, 4=Borg, 5=Lock, 6=Resource, 10=UserAbort
