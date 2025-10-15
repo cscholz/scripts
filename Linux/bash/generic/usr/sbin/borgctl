@@ -1,6 +1,6 @@
 #!/bin/bash
-# Version=20251014.02
-# Wrapper for easy borg usage - Fixed relocated repo handling
+# Version=20251015.04
+# Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
 # Standardized exit codes for error handling
@@ -402,14 +402,21 @@ ssh_connection_test() {
 
 # Check if repository is reachable
 repo_preflight() {
-  log_status "[ ] Repository reachability check"
+  log_status "[i] Repository reachability check..." 1
+  echo "    Note: Checking repository access and integrity"
 
   local timeout_val="${borg_operation_timeout:-300}"
   local tmpout
   tmpout=$(tempfile)
 
-  timeout "$timeout_val" borg info "$repo_path" >"$tmpout" 2>&1
+  # Run borg info in background with spinner
+  timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$tmpout" &
+  local borg_pid=$!
+  show_progress_spinner "$borg_pid"
+  wait "$borg_pid"
   local rc=$?
+  
+  echo
 
   # Check if error is due to relocated repository
   if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$tmpout"; then
@@ -421,10 +428,10 @@ repo_preflight() {
   fi
 
   if [[ $rc -eq 0 ]]; then
-    log_status "[${GREEN}${CHECKMARK}${NC}] Repository reachability check" 1
+    log_status "[${GREEN}${CHECKMARK}${NC}] Repository is reachable" 1
     return "$EXIT_SUCCESS"
   else
-    log_status "[${RED}${CROSSMARK}${NC}] Repository reachability check" 1
+    log_status "[${RED}${CROSSMARK}${NC}] Repository not reachable" 1
     return "$EXIT_BORG_ERROR"
   fi
 }
@@ -465,6 +472,29 @@ check_remote_disk_space() {
 
     log_status "[${GREEN}${CHECKMARK}${NC}] Checking remote disk space (${available_mb}MB available)" 1
     return "$EXIT_SUCCESS"
+}
+
+# Show elapsed time while a process runs
+# Args: $1=PID to monitor, $2=optional message prefix
+show_progress_spinner() {
+    local pid=$1
+    local prefix="${2:-    Progress:}"
+    local start_time=$(date +%s)
+    local showed_30s_message=0
+    
+    while ps -p "$pid" > /dev/null 2>&1; do
+        local elapsed=$(($(date +%s) - start_time))
+        printf "\r%s %ds elapsed" "$prefix" "$elapsed"
+        sleep 1
+        
+        # Show helpful message after 30 seconds
+        if [[ $elapsed -ge 30 && $showed_30s_message -eq 0 ]]; then
+            printf "\n    Still working - this is normal for large/relocated repositories\n"
+            showed_30s_message=1
+        fi
+    done
+    
+    printf "\r%s Completed in %ds%20s\n" "$prefix" "$(($(date +%s) - start_time))" ""
 }
 
 # Send email notification
@@ -714,14 +744,24 @@ backup_delete() {
 backup_list_and_mail() {
     acquire_run_lock
     set_variables "full"
-    log_status "[ ] Listing all backups" 1
+    log_status "[i] Listing all backups..." 1
+    echo
 
+    local timeout_val="${borg_operation_timeout:-300}"
     local mailfile
     mailfile=$(tempfile)
     debug_msg "borg list $repo_path > $mailfile"
 
-    borg list "$repo_path" > "$mailfile" 2>&1
-    local rc=$?
+    timeout "$timeout_val" borg list "$repo_path" 2>&1 | tee "$mailfile"
+    local rc=${PIPESTATUS[0]}
+    
+    echo
+    
+    # Check for timeout
+    if [[ $rc -eq 124 ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Listing backups timed out after ${timeout_val}s" 1
+        return "$EXIT_BORG_ERROR"
+    fi
 
     # Check if error is due to relocated repository
     if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$mailfile"; then
@@ -732,10 +772,8 @@ backup_list_and_mail() {
         fi
     fi
 
-    cat "$mailfile"
-
     if [[ $rc -eq 0 ]]; then
-        log_status "[${GREEN}${CHECKMARK}${NC}] Listing all backups" 1
+        log_status "[${GREEN}${CHECKMARK}${NC}] Listed all backups" 1
         if [[ -n "${mail_recipient:-}" ]]; then
             local subject="$(hostname) borg LIST - [${repo_name}]"
             send_mail_notification "$subject" "$mailfile"
@@ -1005,19 +1043,32 @@ repo_health_check() {
 repo_maintain() {
     acquire_run_lock
     set_variables "full"
-
+    
+    local timeout_val="${borg_operation_timeout:-300}"
     local mailfile
     mailfile=$(tempfile)
     local prune_output
     prune_output=$(tempfile)
 
     # Get repository size before maintenance
-    log_status "[ ] Gathering repository statistics" 1
+    log_status "[i] Gathering repository statistics..." 1
+    if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+        echo "    Note: Relocated repository - may take 2-5 minutes on first access"
+    else
+        echo "    Note: May take 1-3 minutes for large repositories"
+    fi
+    
     local repo_info_before
     repo_info_before=$(tempfile)
-    borg info "$repo_path" > "$repo_info_before" 2>&1
-
+    
+    # Run borg info in background with spinner
+    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$repo_info_before" &
+    local borg_pid=$!
+    show_progress_spinner "$borg_pid"
+    wait "$borg_pid"
     local rc=$?
+    
+    echo
 
     # Check for repository ID mismatch warning
     if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$repo_info_before"; then
@@ -1058,20 +1109,24 @@ repo_maintain() {
 
     # Extract size using multiple methods for robustness
     local size_before
-    # Try method 1: Look for "All archives" line
-    size_before=$(grep "All archives:" "$repo_info_before" | grep -o "Compressed size:.*" | sed 's/Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | head -1 | tr -d '\n')
-
-    # Try method 2: Look for any "Compressed size" line if method 1 failed
+    
+    # The output format is:
+    #                        Original size      Compressed size    Deduplicated size
+    # All archives:              117.32 TB             90.17 TB            816.62 GB
+    # We want the Deduplicated size (actual disk usage) which is field 7+8 in awk
+    
+    size_before=$(grep "All archives:" "$repo_info_before" | awk '{print $7, $8}' | tr -d '\n')
+    
+    # Fallback: Try old format if new format didn't work
     if [[ -z "$size_before" ]]; then
-        size_before=$(grep "Compressed size:" "$repo_info_before" | head -1 | sed 's/.*Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
+        size_before=$(grep "Deduplicated size:" "$repo_info_before" | head -1 | sed 's/.*Deduplicated size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
     fi
 
     if [[ -z "$size_before" ]]; then
         size_before="Unknown"
     fi
 
-    debug_msg "Repository size before: ${size_before}"
-    log_status "[${GREEN}${CHECKMARK}${NC}] Gathering repository statistics" 1
+    debug_msg "Repository size before (deduplicated/on disk): ${size_before}"
 
     # Prune old backups
     log_status "[ ] Pruning old backups" 1
@@ -1120,58 +1175,37 @@ repo_maintain() {
         return "$EXIT_BORG_ERROR"
     fi
 
-    # Extract space saved directly from compact output
-    log_status "[ ] Calculating space savings" 1
-
-    local space_saved="Unknown"
-    local space_freed=""
-
-    # Look for various patterns in compact output
-    # Pattern 1: "Freed: X.XX GB"
-    space_freed=$(grep -i "freed" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
-
-    if [[ -z "$space_freed" ]]; then
-        # Pattern 2: "X.XX GB freed" or "saved X.XX GB"
-        space_freed=$(grep -iE "saved|freed|compaction.*[0-9]" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
-    fi
-
-    if [[ -z "$space_freed" ]]; then
-        # Pattern 3: Look in "Compaction saved" line
-        space_freed=$(grep -i "compaction saved" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
-    fi
-
-    if [[ -n "$space_freed" ]]; then
-        space_saved="$space_freed"
-    else
-        # Check if compaction was skipped
-        if grep -qi "compaction not necessary\|not enough segments\|below threshold" "$compact_output"; then
-            space_saved="0 B (compaction not necessary)"
-        else
-            space_saved="0 B (no space freed)"
-        fi
-    fi
-
-    debug_msg "Space saved from compact: ${space_saved}"
-
-    # Get repository size after maintenance (for reference)
+    # Display results
+    log_status "[i] Gathering final repository statistics..." 1
+    echo "    Note: Collecting post-maintenance statistics"
+    
     local repo_info_after
     repo_info_after=$(tempfile)
-    borg info "$repo_path" > "$repo_info_after" 2>&1
+    
+    # Run borg info in background with spinner
+    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$repo_info_after" &
+    local borg_pid=$!
+    show_progress_spinner "$borg_pid"
+    wait "$borg_pid"
+    
+    echo
 
     # Extract size using same methods
     local size_after
-    size_after=$(grep "All archives:" "$repo_info_after" | grep -o "Compressed size:.*" | sed 's/Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | head -1 | tr -d '\n')
-
+    
+    # Same extraction as size_before: field 7+8 from "All archives:" line (Deduplicated size - actual disk usage)
+    size_after=$(grep "All archives:" "$repo_info_after" | awk '{print $7, $8}' | tr -d '\n')
+    
+    # Fallback: Try old format
     if [[ -z "$size_after" ]]; then
-        size_after=$(grep "Compressed size:" "$repo_info_after" | head -1 | sed 's/.*Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
+        size_after=$(grep "Deduplicated size:" "$repo_info_after" | head -1 | sed 's/.*Deduplicated size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
     fi
 
     if [[ -z "$size_after" ]]; then
         size_after="Unknown"
     fi
 
-    debug_msg "Repository size after: ${size_after}"
-    log_status "[${GREEN}${CHECKMARK}${NC}] Calculating space savings" 1
+    debug_msg "Repository size after (deduplicated/on disk): ${size_after}"
 
     # Display results
     echo
@@ -1179,9 +1213,8 @@ repo_maintain() {
     echo "Repository Maintenance Summary"
     echo "======================================"
     echo "Archives pruned:     ${pruned_count}"
-    echo "Size before:         ${size_before}"
-    echo "Size after:          ${size_after}"
-    echo "Space saved:         ${space_saved}"
+    echo "Disk usage before:   ${size_before}"
+    echo "Disk usage after:    ${size_after}"
     echo "======================================"
     echo
 
@@ -1202,9 +1235,8 @@ repo_maintain() {
             echo "======================================"
             echo
             echo "Archives pruned:     ${pruned_count}"
-            echo "Size before:         ${size_before}"
-            echo "Size after:          ${size_after}"
-            echo "Space saved:         ${space_saved}"
+            echo "Disk usage before:   ${size_before}"
+            echo "Disk usage after:    ${size_after}"
             echo
             echo "======================================"
             echo "Pruned Archives"
@@ -1241,7 +1273,7 @@ repo_maintain() {
             echo
         } > "$mailfile"
 
-        local subject="$(hostname) borg MAINTENANCE - [${repo_name}] - Saved: ${space_saved}"
+        local subject="$(hostname) borg MAINTENANCE - [${repo_name}]"
         send_mail_notification "$subject" "$mailfile"
 
         log_status "[${GREEN}${CHECKMARK}${NC}] Sending email notification" 1
@@ -1253,12 +1285,32 @@ repo_maintain() {
 # Check if repository has an active lock
 repo_lock_check() {
     set_variables "full"
-    log_status "[ ] Checking for repository lock"
+    log_status "[i] Checking for repository lock..." 1
+    echo "    Note: May take 1-2 minutes for large/relocated repositories"
+    
     debug_msg "borg info \"$repo_path\""
 
-    local repostatus
-    repostatus=$(borg info "$repo_path" 2>&1)
+    local timeout_val="${borg_operation_timeout:-300}"
+    local tmpout
+    tmpout=$(tempfile)
+    
+    # Run borg info in background with spinner
+    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$tmpout" &
+    local borg_pid=$!
+    show_progress_spinner "$borg_pid"
+    wait "$borg_pid"
     local rc=$?
+    
+    echo
+    
+    # Check for timeout
+    if [[ $rc -eq 124 ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Repository check timed out after ${timeout_val}s" 1
+        return "$EXIT_BORG_ERROR"
+    fi
+    
+    local repostatus
+    repostatus=$(cat "$tmpout")
 
     if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
         log_status "[${RED}${CROSSMARK}${NC}] Repository is locked" 1
@@ -1299,6 +1351,162 @@ repo_lock_break() {
         return "$EXIT_BORG_ERROR"
     fi
 
+    return "$EXIT_SUCCESS"
+}
+
+# Rebuild repository cache (useful after repo restore from backup)
+repo_cache_rebuild() {
+    set_variables "full"
+    
+    echo
+    echo -e "${BOLD}Repository Cache Rebuild${NOBOLD}"
+    echo "========================="
+    echo
+    echo "This will:"
+    echo "  1. Delete local cache and security info"
+    echo "  2. Rebuild cache from repository"
+    echo
+    echo "Use this when:"
+    echo "  • Repository was restored from backup"
+    echo "  • Cache is corrupted or outdated"
+    echo "  • Repository was moved/relocated"
+    echo
+    echo -e "${YELLOW}NOTE: This will NOT delete any backups in the repository!${NC}"
+    echo "      It only affects local cache files."
+    echo
+    
+    read -rp "Continue with cache rebuild? (yes/NO): " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        log_status "[${YELLOW}!${NC}] Cache rebuild cancelled" 1
+        return "$EXIT_USER_ABORT"
+    fi
+    
+    local cache_dir="$HOME/.cache/borg"
+    local security_dir="$HOME/.config/borg/security"
+    local repo_id
+    
+    # Try to get repository ID first
+    log_status "[i] Getting repository ID..." 1
+    echo "    Note: May take 1-2 minutes for relocated repositories"
+    
+    local timeout_val="${borg_operation_timeout:-300}"
+    local repo_info_temp
+    repo_info_temp=$(tempfile)
+    
+    # Run borg info in background with spinner
+    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$repo_info_temp" &
+    local borg_pid=$!
+    show_progress_spinner "$borg_pid"
+    wait "$borg_pid"
+    local rc=$?
+    
+    echo
+    
+    # Check for timeout
+    if [[ $rc -eq 124 ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Getting repository ID timed out after ${timeout_val}s" 1
+        return "$EXIT_BORG_ERROR"
+    fi
+    
+    repo_id=$(grep "Repository ID:" "$repo_info_temp" | awk '{print $3}')
+    
+    if [[ -n "$repo_id" ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Repository ID: ${repo_id}" 1
+        echo
+        
+        # Delete specific cache and security directories
+        log_status "[ ] Deleting cache for this repository"
+        
+        local deleted_items=0
+        if [[ -d "${cache_dir}/${repo_id}" ]]; then
+            debug_msg "rm -rf \"${cache_dir}/${repo_id}\""
+            rm -rf "${cache_dir}/${repo_id}"
+            ((deleted_items++))
+        fi
+        
+        if [[ -d "${security_dir}/${repo_id}" ]]; then
+            debug_msg "rm -rf \"${security_dir}/${repo_id}\""
+            rm -rf "${security_dir}/${repo_id}"
+            ((deleted_items++))
+        fi
+        
+        if [[ $deleted_items -gt 0 ]]; then
+            log_status "[${GREEN}${CHECKMARK}${NC}] Deleted ${deleted_items} cache/security directories" 1
+        else
+            log_status "[${YELLOW}!${NC}] No cache found for this repository (already clean)" 1
+        fi
+    else
+        log_status "[${YELLOW}!${NC}] Could not determine repository ID" 1
+        echo
+        echo "Delete ALL borg caches instead?"
+        echo -e "${RED}WARNING: This affects all repositories on this system!${NC}"
+        read -rp "Delete all borg caches? (yes/NO): " confirm_all
+        
+        if [[ "$confirm_all" != "yes" ]]; then
+            log_status "[${YELLOW}!${NC}] Cache rebuild cancelled" 1
+            return "$EXIT_USER_ABORT"
+        fi
+        
+        log_status "[ ] Deleting all borg caches"
+        
+        local deleted=0
+        if [[ -d "$cache_dir" ]]; then
+            debug_msg "rm -rf \"${cache_dir}\"/*"
+            rm -rf "${cache_dir:?}"/*
+            ((deleted++))
+        fi
+        
+        if [[ -d "$security_dir" ]]; then
+            debug_msg "rm -rf \"${security_dir}\"/*"
+            rm -rf "${security_dir:?}"/*
+            ((deleted++))
+        fi
+        
+        log_status "[${GREEN}${CHECKMARK}${NC}] Deleted all borg caches (${deleted} directories)" 1
+    fi
+    
+    # Rebuild cache by running borg list
+    log_status "[i] Rebuilding cache from repository..." 1
+    echo "    Note: This will list all archives and may take a few minutes"
+    
+    local timeout_val="${borg_operation_timeout:-300}"
+    debug_msg "borg list \"$repo_path\""
+    
+    # Run borg list in background with spinner
+    timeout "$timeout_val" borg list "$repo_path" 2>&1 &
+    local borg_pid=$!
+    show_progress_spinner "$borg_pid"
+    wait "$borg_pid"
+    local rc=$?
+    
+    echo
+    
+    # Check for timeout
+    if [[ $rc -eq 124 ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Cache rebuild timed out after ${timeout_val}s" 1
+        echo
+        echo -e "${RED}Cache rebuild timed out!${NC}"
+        return "$EXIT_BORG_ERROR"
+    fi
+    
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Cache successfully rebuilt" 1
+        echo
+        echo -e "${GREEN}Cache successfully rebuilt!${NC}"
+        echo
+        echo "You can now run normal backup operations."
+    else
+        log_status "[${RED}${CROSSMARK}${NC}] Failed to rebuild cache" 1
+        echo
+        echo -e "${RED}Cache rebuild failed!${NC}"
+        echo "Please check:"
+        echo "  • Repository is accessible"
+        echo "  • SSH connection works"
+        echo "  • Passphrase is correct"
+        return "$EXIT_BORG_ERROR"
+    fi
+    
     return "$EXIT_SUCCESS"
 }
 
@@ -1582,16 +1790,15 @@ config_check_command() {
 show_readme() {
     cat <<'EOF'
 # borgctl - Borg Backup Wrapper Script
-Version 20251014.02
+Version 20251015.04
 
-## Changes in This Version
-- Fixed: BORG_RELOCATED_REPO_ACCESS_IS_OK is now properly respected in ALL functions
-- When BORG_RELOCATED_REPO_ACCESS_IS_OK="yes" is set in config:
-  * No warnings are shown for repository ID mismatches
-  * All operations proceed silently (only debug messages in -v mode)
-  * Repository is treated as valid without user interaction
-- Fixed in functions: backup_list, repo_info, repo_maintain, repo_preflight, select_archive_interactive
-- Previous fix: Environment variables are exported immediately after config loading
+## Changes in This Version (v.04)
+- CHANGED: Size reporting now uses Deduplicated size (actual disk usage)
+- Shows real space used on disk after deduplication (e.g., 816.87 GB)
+- Labels changed to "Disk usage before/after" for clarity
+- Previous (v.03): Removed spinner, simple elapsed time counter
+- Previous (v.02): Fixed size reporting and removed space saved calculation
+- Previous (v.01): Fixed timeout_val variable in repo_maintain()
 
 ## Features
 - Automated backup creation with compression and deduplication
@@ -1602,6 +1809,7 @@ Version 20251014.02
 - Remote disk space checks
 - Lock management
 - Interactive archive selection
+- Cache rebuild after repository restore
 - Configuration validation and migration
 - Comprehensive error handling
 
@@ -1618,6 +1826,12 @@ Important: If your repository was moved or relocated, add to your config:
 BORG_RELOCATED_REPO_ACCESS_IS_OK="yes"
 
 This will suppress all repository ID mismatch warnings and allow operations to proceed automatically.
+
+## Cache Rebuild
+If you restored your repository from backup or have cache issues:
+./borgctl.sh repo cache-rebuild
+
+This safely deletes and rebuilds only the local cache without affecting repository backups.
 
 ## Exit Codes
 0=Success, 1=General, 2=Config, 3=SSH, 4=Borg, 5=Lock, 6=Resource, 10=UserAbort
@@ -1697,7 +1911,7 @@ _borgctl_complete() {
 
   local sub1="backup repo completion help init-config readme config-check"
   local backup_sub="create delete list mount restore"
-  local repo_sub="init info health-check maintain lock-check lock-break"
+  local repo_sub="init info health-check maintain lock-check lock-break cache-rebuild"
 
   if [[ ${cword} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${sub1}" -- "$cur") )
@@ -1741,6 +1955,7 @@ show_help() {
     echo "    repo maintain                      Maintenance (prune + compact)"
     echo "    repo lock-check                    Check for locks"
     echo "    repo lock-break                    Break lock"
+    echo "    repo cache-rebuild                 Rebuild local cache"
     echo
     echo -e "  ${b}Configuration & Help:${nb}"
     echo "    init-config                        Create configuration"
@@ -1855,6 +2070,11 @@ main() {
                 lock-break)
                     shift 2
                     repo_lock_break "$@"
+                    exit $?
+                    ;;
+                cache-rebuild)
+                    shift 2
+                    repo_cache_rebuild "$@"
                     exit $?
                     ;;
                 *)
