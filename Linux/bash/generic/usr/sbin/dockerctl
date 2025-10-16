@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+# project: systemd units for docker containers (*.app)
+# version: 20251010.01
+
+set -euo pipefail
+
+# ===================== Config Handling (from template) =====================
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+SCRIPT_NAME="$(basename "$0")"
+CONFIG_NAME="${SCRIPT_NAME%.sh}.conf"
+GLOBAL_CONFIG="/etc/${CONFIG_NAME}"
+USER_CONFIG="$HOME/.config/${CONFIG_NAME}"
+
+# --- Logging ---
+log_status() {
+    local msg="$1"
+    local newline="${2:-0}" # 0 = no newline, 1 = newline
+    if [[ "$newline" == "1" ]]; then
+        echo -e "\r$msg"
+    else
+        echo -ne "\r$msg"
+    fi
+}
+
+debug=0
+debug_msg() {
+    if [[ "$debug" == "1" ]]; then
+        log_status "  ${YELLOW}\$ $*${NC}" 1
+    fi
+}
+
+# --- Config permissions check (0600) ---
+check_config_permissions() {
+    local cfg="$1"
+    if [[ -f "$cfg" ]]; then
+        local mode
+        mode=$(stat -c "%a" "$cfg")
+        if [[ "$mode" != "600" ]]; then
+            log_status "[${RED}✗${NC}] Config file $cfg must have permissions 0600, but has $mode" 1
+            exit 10
+        fi
+    fi
+}
+
+check_config_permissions "$GLOBAL_CONFIG"
+check_config_permissions "$USER_CONFIG" 2>/dev/null || true
+
+# --- Early -v handling (strip from argv, set debug=1) ---
+args=()
+for arg in "$@"; do
+    if [[ "$arg" == "-v" ]]; then
+        debug=1
+    else
+        args+=("$arg")
+    fi
+done
+set -- "${args[@]}"
+
+# --- Load configs (global first, then user overrides) ---
+config_loaded=0
+if [[ -f "$GLOBAL_CONFIG" ]]; then
+    # shellcheck disable=SC1090
+    source "$GLOBAL_CONFIG"
+    config_loaded=1
+fi
+if [[ -f "$USER_CONFIG" ]]; then
+    # shellcheck disable=SC1090
+    source "$USER_CONFIG"
+    config_loaded=1
+fi
+
+# ===================== App defaults =====================
+SYSTEMD_DIR="/etc/systemd/system"
+UNIT_PREFIX="docker-container-"
+UNIT_SUFFIX=".service"
+UNIT_MATCH_GLOB="docker-container-*.app.service"
+
+# --- UI helpers ---
+ok()   { printf " [%b✓%b] %s\n" "${GREEN}" "${NC}" "$*"; }
+warn() { printf " [%b!%b] %s\n"  "${YELLOW}" "${NC}" "$*"; }
+err()  { printf " [%b✗%b] %s\n" "${RED}" "${NC}" "$*" >&2; }
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 list
+  $0 new <full_container_name.app>
+  $0 rm  <full_container_name.app | ${UNIT_PREFIX}<name>.app${UNIT_SUFFIX}>
+  $0 version
+  -u                 # web self-update (reads UPDATE_BASE from config)
+  $0 update          # local update (reads UPDATE_SOURCE etc. from config)
+
+Config files (user overrides global):
+  - ${GLOBAL_CONFIG}
+  - ${USER_CONFIG}
+
+Note: This script expects Docker containers with names ending in '.app'
+EOF
+  exit 1
+}
+
+# ---- Version info ----
+print_version() { grep -E '^# version:' "$0" | sed 's/^# version:[[:space:]]*//'; }
+
+# ===================== Core helpers =====================
+normalize_name_or_unit() {
+  local in="${1:-}"
+  [[ -z "$in" ]] && usage
+  if [[ "$in" =~ \.service$ ]]; then
+    local base="${in##*/}"
+    local re="^${UNIT_PREFIX//./\\.}.*\\.app${UNIT_SUFFIX//./\\.}$"
+    [[ "$base" =~ $re ]] || { err "Unexpected unit name: $in"; exit 2; }
+    base="${base#${UNIT_PREFIX}}"
+    echo "${base%${UNIT_SUFFIX}}"      # -> *.app
+    return 0
+  fi
+  [[ "$in" =~ \.app$ ]] || { err "Container name must end with '.app'"; exit 2; }
+  echo "$in"
+}
+
+unit_file_for() { echo "${UNIT_PREFIX}${1}${UNIT_SUFFIX}"; }
+unit_path_for() { echo "${SYSTEMD_DIR}/$(unit_file_for "$1")"; }
+
+# ===================== Functions =====================
+list_units() {
+  shopt -s nullglob
+  for f in ${SYSTEMD_DIR}/${UNIT_MATCH_GLOB}; do
+    basename "$f"
+  done
+}
+
+# --- Generate systemd unit file for Docker container ---
+generate_docker_unit() {
+  local name="$1"           # *.app
+  local unit_path="$2"
+  
+  # Check if container exists
+  if ! docker container inspect "$name" >/dev/null 2>&1; then
+    err "Container '$name' not found. Please create it first."
+    exit 3
+  fi
+  
+  # Get container configuration
+  local restart_policy
+  restart_policy=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$name" 2>/dev/null || echo "no")
+  
+  # Generate systemd unit file
+  cat >"$unit_path" <<EOF
+[Unit]
+Description=Docker container ${name}
+Documentation=https://docs.docker.com
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker start ${name}
+ExecStop=/usr/bin/docker stop -t 10 ${name}
+TimeoutStartSec=180s
+TimeoutStopSec=60s
+EOF
+
+  # Add restart policy if configured in container
+  case "$restart_policy" in
+    always|unless-stopped)
+      cat >>"$unit_path" <<EOF
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=0
+EOF
+      ;;
+    on-failure)
+      cat >>"$unit_path" <<EOF
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=3
+StartLimitIntervalSec=60s
+EOF
+      ;;
+    *)
+      cat >>"$unit_path" <<EOF
+Restart=no
+EOF
+      ;;
+  esac
+
+  cat >>"$unit_path" <<EOF
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+new_unit() {
+  local name; name="$(normalize_name_or_unit "${1:-}")"
+  local unit_file; unit_file="$(unit_file_for "$name")"
+  local unit_path; unit_path="$(unit_path_for "$name")"
+
+  # Check if container exists
+  debug_msg "docker container inspect \"$name\" >/dev/null"
+  if ! docker container inspect "$name" >/dev/null 2>&1; then
+    err "Container '$name' not found. Please create it first with: docker create --name $name <image>"
+    exit 3
+  fi
+  
+  # Generate systemd unit file
+  debug_msg "Generating systemd unit for Docker container \"$name\""
+  generate_docker_unit "$name" "$unit_path"
+  ok "Unit generated: ${unit_file}"
+
+  debug_msg "systemctl daemon-reload"
+  systemctl daemon-reload >/dev/null 2>&1
+
+  debug_msg "systemctl enable --now \"$unit_file\""
+  systemctl enable --now "$unit_file" >/dev/null 2>&1
+  ok "Unit enabled: ${unit_file}"
+}
+
+rm_unit() {
+  local name; name="$(normalize_name_or_unit "${1:-}")"
+  local unit_file; unit_file="$(unit_file_for "$name")"
+  local unit_path; unit_path="$(unit_path_for "$name")"
+
+  if [[ ! -f "$unit_path" ]]; then
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "$unit_file"; then
+      : # registered, but no file in SYSTEMD_DIR
+    else
+      ok "Nothing to remove: ${unit_file}"
+      exit 0
+    fi
+  fi
+
+  debug_msg "systemctl disable --now \"$unit_file\""
+  systemctl disable --now "$unit_file" >/dev/null 2>&1 || true
+  ok "Stopped & disabled: ${unit_file}"
+
+  if [[ -f "$unit_path" ]]; then
+    debug_msg "rm -f \"$unit_path\""
+    rm -f "$unit_path" >/dev/null 2>&1
+    ok "File removed: ${unit_path}"
+  fi
+
+  debug_msg "systemctl daemon-reload"
+  systemctl daemon-reload >/dev/null 2>&1
+  ok "daemon-reload executed"
+}
+
+# ===================== Local update (config-driven) =====================
+load_local_update_config() {
+  if [[ "$config_loaded" -eq 0 ]]; then
+    err "No configuration file found! Needed for 'update'."
+    exit 10
+  fi
+  : "${UPDATE_MODE:=copy}"
+  : "${UPDATE_PERMS:=+x}"
+  : "${ALLOW_DOWNGRADE:=false}"
+  [[ -n "${UPDATE_SOURCE:-}" ]] || { err "UPDATE_SOURCE missing in config"; exit 6; }
+  [[ -f "${UPDATE_SOURCE}"   ]] || { err "UPDATE_SOURCE not found: ${UPDATE_SOURCE}"; exit 7; }
+}
+
+extract_version_from_file() {
+  awk -F': ' '/^# version:/ {print $2; exit}' "$1"
+}
+
+do_update() {
+  load_local_update_config
+  local current_v new_v
+  current_v="$(print_version)"
+  new_v="$(extract_version_from_file "${UPDATE_SOURCE}")"
+  [[ -n "$new_v" ]] || { err "Could not read '# version:' from UPDATE_SOURCE"; exit 8; }
+
+  if [[ "${ALLOW_DOWNGRADE}" != "true" ]]; then
+    local lowest
+    lowest="$(printf '%s\n%s\n' "$current_v" "$new_v" | sort -V | head -n1)"
+    if [[ "$lowest" == "$new_v" && "$new_v" != "$current_v" ]]; then
+      err "Downgrade not allowed (local: $current_v, new: $new_v). Set ALLOW_DOWNGRADE=true to force."
+      exit 9
+    fi
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  if [[ "${UPDATE_MODE}" == "move" ]]; then
+    debug_msg "mv -- \"${UPDATE_SOURCE}\" \"${tmp}\""
+    mv -- "${UPDATE_SOURCE}" "${tmp}"
+  else
+    debug_msg "cp -f -- \"${UPDATE_SOURCE}\" \"${tmp}\""
+    cp -f -- "${UPDATE_SOURCE}" "${tmp}"
+  fi
+
+  chmod ${UPDATE_PERMS} "${tmp}" >/dev/null 2>&1 || chmod +x "${tmp}"
+  debug_msg "cp -f -- \"${tmp}\" \"$0\""
+  cp -f -- "${tmp}" "$0"
+  rm -f -- "${tmp}"
+  ok "Updated -> version: $(print_version)"
+}
+
+# ===================== Web self-update (-u; uses UPDATE_BASE) =====================
+_remote_url_for_self_from_base() {
+  local base="$1"
+  local self_name; self_name="$(basename "$0")"
+  [[ "$base" == */ ]] && echo "${base}${self_name}" || echo "${base}/${self_name}"
+}
+
+_web_fetch_head() {
+  local url="$1"
+  curl -fsS -r 0-200 "$url" 2>/dev/null | tr -d '\r' || true
+}
+
+parse_version_from_head() {
+  awk -F': ' '/^# version:/ {print $2; exit}'
+}
+
+web_self_update() {
+  if [[ "$config_loaded" -eq 0 ]]; then
+    err "No configuration file found! Needed for '-u'."
+    exit 10
+  fi
+  [[ -n "${UPDATE_BASE:-}" ]] || { err "UPDATE_BASE not set in config (required for '-u')."; exit 30; }
+
+  local url; url="$(_remote_url_for_self_from_base "$UPDATE_BASE")"
+  local remote_head remote_v local_v
+  remote_head="$(_web_fetch_head "$url")"
+  [[ -n "$remote_head" ]] || { err "Could not fetch remote header: $url"; exit 31; }
+
+  remote_v="$(printf '%s\n' "$remote_head" | parse_version_from_head)"
+  [[ -n "$remote_v" ]] || { err "Could not read remote '# version:'"; exit 32; }
+  local_v="$(print_version)"
+
+  printf "%-14s %s\n" "Web version:" "$remote_v"
+  printf "%-14s %s\n" "Local version:" "$local_v"
+
+  if [[ "$remote_v" == "$local_v" ]]; then
+    ok "Already up to date."
+    return 0
+  fi
+
+  local lowest
+  lowest="$(printf '%s\n%s\n' "$local_v" "$remote_v" | sort -V | head -n1)"
+  if [[ "$lowest" != "$local_v" && "$remote_v" != "$local_v" ]]; then
+    : # remote > local -> proceed
+  else
+    warn "Remote version is older or equal. Skipping update."
+    return 0
+  fi
+
+  local script_path script_name octal_mode
+  script_path=$(realpath "$0" 2>/dev/null || echo "$0")
+  script_name=$(basename "$script_path")
+  octal_mode=$(stat -c '%a' "$script_path" 2>/dev/null || echo "755")
+
+  printf "\r[ ] Downloading new version..."
+  if ! curl -fsSL -o "${script_name}.tmp" "$url"; then
+    echo -e "\r[${RED}✗${NC}] Download failed"
+    err "Web-update aborted."
+    exit 33
+  fi
+  echo -e "\r[${GREEN}✓${NC}] Downloading new version"
+
+  printf "\r[ ] Applying file mode..."
+  if ! chmod "$octal_mode" "${script_name}.tmp"; then
+    echo -e "\r[${RED}✗${NC}] Mode apply failed"
+    err "Web-update aborted."
+    exit 34
+  fi
+  echo -e "\r[${GREEN}✓${NC}] Applying file mode"
+
+  printf "\r[ ] Swapping in place..."
+  cat > updateScript.sh <<'EOF'
+#!/usr/bin/env bash
+set -e
+target="$(realpath "$0" 2>/dev/null || echo "$0")"
+name="$(basename "$target")"
+if mv "${name}.tmp" "${target}"; then
+  printf "\r\033[0KUpdate complete.\n"
+  rm -f "$0"
+else
+  printf "\r\033[0KUpdate failed. Please try again!\n"
+  rm -f "$0"
+fi
+EOF
+  chmod +x updateScript.sh
+  exec /bin/bash updateScript.sh
+}
+
+# ===================== Dispatcher =====================
+if [[ "${1:-}" == "-u" ]]; then
+  web_self_update
+  exit $?
+fi
+
+case "${1:-}" in
+  list)    list_units ;;
+  new)     new_unit "${2:-}" ;;
+  rm)      rm_unit "${2:-}" ;;
+  version) print_version ;;
+  update)  do_update ;;
+  ""|--help|-h) usage ;;
+  *)       usage ;;
+esac
