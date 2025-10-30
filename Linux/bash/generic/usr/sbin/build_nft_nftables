@@ -1,0 +1,551 @@
+#!/usr/sbin/nft -f
+# Example NFTables Configuration Template
+# Version: 2.0 - Example/Template
+# https://www.netfilter.org/projects/nftables/manpage.html
+#
+# This is an example configuration that can be shared publicly.
+# Replace all example values with your actual network configuration.
+#
+# Features:
+# - Optimized rule order for performance
+# - Geo-blocking support
+# - Domain-based firewall rules with DNS resolution
+# - CrowdSec integration
+# - IPv4 and IPv6 support
+# - VPN and Docker network support
+
+##################
+# Variable Def.  #
+##################
+
+# Admin hosts - Replace with your admin IPs
+define admin_hosts	= {203.0.113.50/32}
+
+# Services to allow
+define in_tcp_dport	= {22, 25, 80, 443, 587, 993}
+define in_udp_dport	= {53, 443, 51820}
+define out_tcp_dport	= {22, 25, 53, 80, 443, 587}
+define out_udp_dport	= {53, 123}
+
+# Blocked IPs - Example bad actors (replace with your blocklist)
+define in_block		= {198.51.100.10, 198.51.100.20, 203.0.113.100}
+
+# Network interfaces - Adjust to your system
+define if_loopback 	= lo
+define net_loopback     = 127.0.0.0/8
+
+define if_ext 	 	= eth0
+define ip_ext	        = 203.0.113.10
+define sub_ext		= 255.255.255.0
+
+# VPN configuration - Example WireGuard
+define if_vpn		= wg0
+define ip_vpn           = 10.8.0.0/24
+define ip6_vpn          = fd42:42:42::/64
+
+# Docker configuration
+define if_docker	= docker0
+define ip_docker        = 172.17.0.0/16
+
+# Private network ranges
+define net_class_a 	= 10.0.0.0/8
+define net_class_b 	= 172.16.0.0/12
+define net_class_c 	= 192.168.0.0/16
+define net_class_d 	= 224.0.0.0/4
+define net_class_e 	= 240.0.0.0/5
+define broadcast_src    = 0.0.0.0
+define broadcast_dest   = 255.255.255.255
+
+define trusted_hosts = {127.0.0.1}
+
+# Censys.io port scanning networks (public information)
+define censys_ipv4 = {162.142.125.0/24, 167.94.138.0/24, 167.94.145.0/24, 167.94.146.0/24, 167.248.133.0/24, 199.45.154.0/24, 199.45.155.0/24}
+define censys_ipv6 = {2602:80d:1000:b0cc:e::/80, 2620:96:e000:b0cc:e::/80}
+
+# Attack prevention - Add known attacker networks here
+define attack_networks = {198.51.100.0/24}
+
+####################
+# Purge/Flush      #
+####################
+flush ruleset
+
+#########################
+# NAT IPv4              #
+#########################
+table ip nat {
+  chain prerouting {
+        type nat hook prerouting priority -150; policy accept;
+
+        # Reverse path filtering
+        fib saddr . iif oif eq 0 counter drop comment "reverse path filtering";
+  }
+  
+  chain postrouting {
+        type nat hook postrouting priority -150; policy accept;
+
+        # Enable NAT for VPN over external interface
+        ip saddr {$ip_vpn} oifname {$if_ext} masquerade comment "NAT for VPN";
+
+        # Enable NAT for Docker over external interface
+        ip saddr {$ip_docker} oifname {$if_ext} masquerade comment "NAT for Docker";
+  }
+}
+
+#########################
+# NAT IPv6              #
+#########################
+table ip6 nat {
+  chain prerouting {
+        type nat hook prerouting priority -100; policy accept;
+
+        # Drop invalid conntrack early
+        ct state invalid log prefix "nft-6/preroute/drop/invalid " limit rate 5/second counter drop comment "invalid conntrack";
+
+        # TCP SYN scan detection
+        tcp flags & (fin|syn|rst|ack) != syn ct state new log prefix "nft-6/preroute/drop/scan " limit rate 5/second counter drop comment "non-SYN new connection";
+
+        # Reverse path filtering
+        fib saddr . iif oif eq 0 counter drop comment "reverse path filtering";
+  }
+  
+  chain postrouting {
+        type nat hook postrouting priority -100; policy accept;
+
+        # Enable NAT for VPN over external interface
+        ip6 saddr {$ip6_vpn} oifname {$if_ext} masquerade comment "NAT for VPN";
+  }
+}
+
+
+#########################
+# IPv4 Traffic          #
+#########################
+table ip filter {
+
+	#########################
+	# Geo IP preparation    #
+	#########################
+	# Optional: Include GeoIP files if you use geo-blocking
+	# include "/root/scripts/nftables-geoip/geoip-def-all.nft"
+	# include "/root/scripts/nftables-geoip/geoip-ipv4-interesting.nft"
+
+	# chain geoip-mark-output {
+	#        type filter hook output priority -1; policy accept;
+	#        meta mark set ip daddr map @geoip4
+	# }
+
+	# chain geoip-mark-input {
+	#        type filter hook input priority -1; policy accept;
+	#        meta mark set ip saddr map @geoip4
+	# }
+
+
+   #########################
+   # Incoming IPv4-Traffic #
+   #########################
+   chain input { 		
+        type filter hook input priority 0; policy drop;
+
+        ################################################################# 
+        # PHASE 1: Fast Path (most frequent packets)
+        ################################################################# 
+        
+        # Accept loopback immediately
+        iifname {$if_loopback} accept comment "loopback traffic";
+
+        # Accept established/related connections (majority of packets)
+        ct state {established, related} accept comment "existing connections";
+
+        ################################################################# 
+        # PHASE 2: Early Drops (malicious traffic)
+        ################################################################# 
+        
+        # Drop invalid connections early
+        ct state invalid drop comment "invalid conntrack";
+
+        # Known attackers blacklist
+        ip saddr {$in_block} drop comment "blacklisted IPs";
+
+        # Optional: Geo-blocking (uncomment if using GeoIP)
+        # meta mark {$CN, $RU, $NG, $RO, $IN, $IR, $BY} ct state new drop comment "geo-block";
+
+        ################################################################# 
+        # PHASE 3: Protocol Validation
+        ################################################################# 
+        
+        # TCP flag validation - scan detection
+        tcp flags & (fin|syn|rst|ack) != syn ct state new log prefix "nft/input/drop/scan-nonsyn " limit rate 5/second drop comment "non-SYN new";
+        tcp flags & (fin|syn) == (fin|syn) log prefix "nft/input/drop/scan-finsyn " limit rate 5/second drop comment "SYN+FIN scan";
+        tcp flags & (syn|rst) == (syn|rst) log prefix "nft/input/drop/scan-synrst " limit rate 5/second drop comment "SYN+RST scan";
+        tcp flags & (fin|syn|rst|psh|ack|urg) == (fin|psh|urg) log prefix "nft/input/drop/xmas " limit rate 5/second drop comment "XMAS scan";
+        tcp flags & (fin|syn|rst|psh|ack|urg) < (fin) log prefix "nft/input/drop/null " limit rate 5/second drop comment "NULL scan";
+
+        ################################################################# 
+        # PHASE 4: Network Validation
+        ################################################################# 
+        
+        # Anti-spoofing: drop packets from external interface with our own IP
+        iifname {$if_ext} ip saddr {$ip_ext} log prefix "nft/input/drop/spoofing-self " limit rate 5/second drop comment "spoofing our IP";
+
+        # Block private IPs from external interface (except admin hosts)
+        iifname {$if_ext} ip saddr {$net_class_a, $net_class_b, $net_class_c} ip saddr != {$admin_hosts} log prefix "nft/input/drop/rfc1918 " limit rate 5/second drop comment "RFC1918 from WAN";
+
+        # Drop bogons
+        iifname {$if_ext} ip saddr {$net_class_d, $net_class_e, $broadcast_src, $broadcast_dest} log prefix "nft/input/drop/bogon " limit rate 5/second drop comment "bogon networks";
+
+        ################################################################# 
+        # PHASE 5: Rate Limiting (DDoS protection)
+        ################################################################# 
+        
+        # SYN flood protection
+        tcp flags syn tcp dport {$in_tcp_dport} meter syn_flood { ip saddr timeout 10s limit rate over 25/second burst 50 packets } log prefix "nft/input/drop/syn-flood " drop comment "SYN flood";
+
+        # ICMP rate limiting
+        ip protocol icmp limit rate 10/second accept comment "ICMP rate limited";
+
+        ################################################################# 
+        # PHASE 6: Allowed Services
+        ################################################################# 
+        
+        # Admin access from trusted hosts
+        ip saddr {$admin_hosts} tcp dport {22} ct state new accept comment "SSH from admin";
+
+        # Public services
+        tcp dport {$in_tcp_dport} ct state new accept comment "allowed TCP services";
+        udp dport {$in_udp_dport} ct state new accept comment "allowed UDP services";
+
+        # VPN traffic
+        iifname {$if_vpn} accept comment "VPN traffic";
+        
+        # Docker traffic
+        iifname {$if_docker} accept comment "Docker traffic";
+
+        ################################################################# 
+        # PHASE 7: Final Drops
+        ################################################################# 
+        
+        # Use TCP reset for rejected connections
+        log prefix "nft/input/reject " limit rate 5/second ip protocol tcp reject with tcp reset comment "TCP reset";
+
+        # Log and reject everything else
+        log prefix "nft/input/reject " limit rate 5/second reject comment "default reject";
+   }
+
+   #########################
+   # Forward IPv4-Traffic  #
+   #########################
+   chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # VPN forwarding
+        iifname {$if_ext} oifname {$if_vpn} ip daddr {$ip_vpn} ct state {related, established} accept comment "VPN inbound";
+        iifname {$if_vpn} oifname {$if_ext} ip saddr {$ip_vpn} accept comment "VPN outbound";
+
+        # Docker forwarding
+        iifname {$if_docker} oifname {$if_ext} accept comment "Docker outbound";
+        iifname {$if_ext} oifname {$if_docker} ct state {related, established} accept comment "Docker inbound";
+
+        # Log and reject
+        log prefix "nft/forward/reject " limit rate 5/second reject comment "default reject";
+   }
+
+   #########################
+   # Outgoing IPv4-Traffic #
+   #########################
+   chain output {
+        type filter hook output priority 0; policy drop;
+        
+        ################################################################# 
+        # PHASE 1: Fast Path
+        ################################################################# 
+        
+        # Accept loopback
+        oifname {$if_loopback} accept comment "loopback";
+
+        # Accept established/related
+        ct state {related, established} accept comment "existing connections";
+
+        ################################################################# 
+        # PHASE 2: Early Drops
+        ################################################################# 
+        
+        # Drop invalid
+        ct state invalid counter drop comment "invalid conntrack";
+
+        ################################################################# 
+        # PHASE 3: ICMP
+        ################################################################# 
+        
+        # ICMP
+        ip protocol icmp accept comment "ICMP";
+
+        ################################################################# 
+        # PHASE 4: Standard Services
+        ################################################################# 
+        
+        # Standard protocols
+        tcp dport {$out_tcp_dport} accept comment "standard TCP";
+        udp dport {$out_udp_dport} accept comment "standard UDP";
+
+        # Interfaces
+        oifname {$if_docker} accept comment "Docker";
+        oifname {$if_vpn} accept comment "VPN";
+
+        ################################################################# 
+        # PHASE 5: Application-Specific Rules (IPv4)
+        ################################################################# 
+        
+        # Example: Package repositories
+        define archive.ubuntu.com_4 = {#DATA}
+        define security.ubuntu.com_4 = {#DATA}
+        define packages.example.com_4 = {#DATA}
+        
+        define apt_hosts_4 = {$archive.ubuntu.com_4, $security.ubuntu.com_4, $packages.example.com_4}
+        
+        ip daddr {$apt_hosts_4} tcp dport {80, 443} ct state new counter log prefix "nft/output/accept/apt " limit rate 10/second accept comment "APT Repositories";
+
+        # Example: Let's Encrypt
+        define acme-v02.api.letsencrypt.org_4 = {#DATA}
+        ip daddr {$acme-v02.api.letsencrypt.org_4} tcp dport {443} ct state new counter log prefix "nft/output/accept/letsencrypt " limit rate 10/second accept comment "Let's Encrypt";
+
+        # Example: CrowdSec
+        define api.crowdsec.net_4 = {#DATA}
+        ip daddr {$api.crowdsec.net_4} tcp dport {443} ct state new counter log prefix "nft/output/accept/crowdsec " limit rate 10/second accept comment "CrowdSec";
+
+        # Example: NTP servers
+        define time.cloudflare.com_4 = {#DATA}
+        ip daddr {$time.cloudflare.com_4} udp dport {123} ct state new counter accept comment "Cloudflare NTP";
+
+        ################################################################# 
+        # PHASE 6: Final Drops
+        ################################################################# 
+        
+        # Use TCP reset
+        log prefix "nft/output/reject " limit rate 5/second ip protocol tcp reject with tcp reset comment "TCP reset";
+
+        # Log and reject
+        log prefix "nft/output/reject " limit rate 5/second reject comment "default reject";
+   }
+}
+
+
+#######################################################################################
+# IPv6 Traffic
+#######################################################################################
+table ip6 filter {
+
+   #########################
+   # Incoming IPv6-Traffic #
+   #########################
+   chain input {
+        type filter hook input priority 0; policy drop;
+        
+        ################################################################# 
+        # PHASE 1: Fast Path
+        ################################################################# 
+        
+        # Accept loopback
+        iifname {$if_loopback} accept comment "loopback";
+
+        # Accept established/related
+        ct state {established, related} accept comment "existing connections";
+
+        ################################################################# 
+        # PHASE 2: Early Drops
+        ################################################################# 
+        
+        # Drop invalid
+        ct state invalid drop comment "invalid conntrack";
+
+        ################################################################# 
+        # PHASE 3: ICMPv6 (Essential for IPv6)
+        ################################################################# 
+        
+        ip6 nexthdr icmpv6 icmpv6 type {destination-unreachable, packet-too-big, time-exceeded, echo-request, parameter-problem, echo-reply, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, ind-neighbor-solicit, ind-neighbor-advert} accept comment "ICMPv6";
+
+        ################################################################# 
+        # PHASE 4: Services
+        ################################################################# 
+        
+        # Admin access
+        ip6 saddr {2001:db8::1} tcp dport {22} ct state new accept comment "SSH from admin";
+
+        # Public services
+        tcp dport {$in_tcp_dport} ct state new accept comment "allowed TCP services";
+        udp dport {$in_udp_dport} ct state new accept comment "allowed UDP services";
+
+        # VPN
+        iifname {$if_vpn} accept comment "VPN";
+
+        ################################################################# 
+        # PHASE 5: Final Drops
+        ################################################################# 
+        
+        # Use TCP reset
+        log prefix "nft-6/input/reject " limit rate 5/second ip6 nexthdr tcp reject with tcp reset comment "TCP reset";
+
+        # Log and reject
+        log prefix "nft-6/input/reject " limit rate 5/second reject comment "default reject";
+   }
+
+   #########################
+   # Forward IPv6-Traffic  #
+   #########################
+   chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # VPN forwarding
+        iifname {$if_ext} oifname {$if_vpn} ip6 daddr {$ip6_vpn} ct state {related, established} accept comment "VPN inbound";
+        iifname {$if_vpn} oifname {$if_ext} ip6 saddr {$ip6_vpn} accept comment "VPN outbound";
+
+        # ICMPv6 (essential for IPv6)
+        ip6 nexthdr icmpv6 icmpv6 type {destination-unreachable, packet-too-big, time-exceeded, echo-request, parameter-problem, echo-reply, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, ind-neighbor-solicit, ind-neighbor-advert} accept comment "ICMPv6";
+
+        # Use TCP reset
+        log prefix "nft-6/forward/reject " limit rate 5/second ip6 nexthdr tcp reject with tcp reset comment "TCP reset";
+
+        # Log and reject
+        log prefix "nft-6/forward/reject " limit rate 5/second reject comment "default reject";
+   }
+
+   #########################
+   # Outgoing IPv6-Traffic #
+   #########################
+   chain output {
+        type filter hook output priority 0; policy drop;
+        
+        ################################################################# 
+        # PHASE 1: Fast Path
+        ################################################################# 
+        
+        # Accept loopback
+        oifname {$if_loopback} accept comment "loopback";
+
+        # Accept established/related
+        ct state {related, established} accept comment "existing connections";
+
+        ################################################################# 
+        # PHASE 2: Early Drops
+        ################################################################# 
+        
+        # Drop invalid
+        ct state invalid counter drop comment "invalid conntrack";
+
+        ################################################################# 
+        # PHASE 3: ICMPv6
+        ################################################################# 
+        
+        # ICMPv6 (essential for IPv6)
+        ip6 nexthdr icmpv6 icmpv6 type {destination-unreachable, packet-too-big, time-exceeded, echo-request, parameter-problem, echo-reply, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, ind-neighbor-solicit, ind-neighbor-advert} accept comment "ICMPv6";
+
+        ################################################################# 
+        # PHASE 4: Standard Services
+        ################################################################# 
+        
+        # Standard protocols
+        tcp dport {$out_tcp_dport} accept comment "standard TCP";
+        udp dport {$out_udp_dport} accept comment "standard UDP";
+
+        # Interfaces
+        oifname {$if_docker} accept comment "Docker";
+        oifname {$if_vpn} accept comment "VPN";
+
+        ################################################################# 
+        # PHASE 5: Application-Specific Rules (IPv6)
+        ################################################################# 
+        
+        # Example: Package repositories (IPv6)
+        define archive.ubuntu.com_6 = {#DATA}
+        define security.ubuntu.com_6 = {#DATA}
+        
+        define apt_hosts_6 = {$archive.ubuntu.com_6, $security.ubuntu.com_6}
+        
+        ip6 daddr {$apt_hosts_6} tcp dport {80, 443} ct state new counter log prefix "nft-6/output/accept/apt " limit rate 10/second accept comment "APT";
+
+        # Example: Let's Encrypt (IPv6)
+        define acme-v02.api.letsencrypt.org_6 = {#DATA}
+        ip6 daddr {$acme-v02.api.letsencrypt.org_6} tcp dport {443} ct state new counter log prefix "nft-6/output/accept/letsencrypt " limit rate 10/second accept comment "Let's Encrypt";
+
+        # Example: CrowdSec (IPv6)
+        define api.crowdsec.net_6 = {#DATA}
+        ip6 daddr {$api.crowdsec.net_6} tcp dport {443} ct state new counter log prefix "nft-6/output/accept/crowdsec " limit rate 10/second accept comment "CrowdSec";
+
+        ################################################################# 
+        # PHASE 6: Final Drops
+        ################################################################# 
+        
+        # Use TCP reset
+        log prefix "nft-6/output/reject " limit rate 5/second ip6 nexthdr tcp reject with tcp reset comment "TCP reset";
+
+        # Log and reject
+        log prefix "nft-6/output/reject " limit rate 5/second reject comment "default reject";
+   }
+}
+
+
+#######################################################################################
+# CrowdSec Integration
+#######################################################################################
+#
+# This section provides integration with CrowdSec for automatic IP blocking.
+# 
+# Priority Strategy:
+# - CrowdSec runs at priority -10 (BEFORE filter @ priority 0)
+# - Banned IPs are dropped BEFORE they reach main firewall rules
+# - Maximum performance: Fewer rule checks for malicious traffic
+#
+# The cs-firewall-bouncer automatically adds IPs to these sets.
+#
+# Installation:
+# 1. Install CrowdSec: https://doc.crowdsec.net/docs/getting_started/install
+# 2. Install bouncer: apt install crowdsec-firewall-bouncer-nftables
+# 3. Configure bouncer in /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml:
+#
+#    mode: nftables
+#    nftables:
+#      ipv4:
+#        table: crowdsec
+#        chain: crowdsec-chain
+#        set_name: crowdsec-blacklists
+#      ipv6:
+#        table: crowdsec6
+#        chain: crowdsec6-chain
+#        set_name: crowdsec6-blacklists
+#
+
+table ip crowdsec {
+	# Set for banned IPv4 addresses
+	# Managed by cs-firewall-bouncer
+	set crowdsec-blacklists {
+		type ipv4_addr
+		flags timeout
+		comment "CrowdSec banned IPv4 addresses"
+	}
+
+	# Chain runs BEFORE normal filter chain
+	chain crowdsec-chain {
+		type filter hook input priority -10; policy accept;
+		
+		# Drop banned IPs immediately with counter for statistics
+		ip saddr @crowdsec-blacklists counter drop comment "CrowdSec: drop banned IPs"
+	}
+}
+
+table ip6 crowdsec6 {
+	# Set for banned IPv6 addresses
+	# Managed by cs-firewall-bouncer
+	set crowdsec6-blacklists {
+		type ipv6_addr
+		flags timeout
+		comment "CrowdSec banned IPv6 addresses"
+	}
+
+	# Chain runs BEFORE normal filter chain
+	chain crowdsec6-chain {
+		type filter hook input priority -10; policy accept;
+		
+		# Drop banned IPs immediately with counter for statistics
+		ip6 saddr @crowdsec6-blacklists counter drop comment "CrowdSec: drop banned IPs"
+	}
+}
