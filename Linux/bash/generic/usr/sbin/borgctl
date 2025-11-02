@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251102.02
+# Version=20251102.03
 # Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
@@ -149,18 +149,30 @@ set -- "${args[@]}"
 #====================[ config loading ]====================
 config_loaded=0
 loaded_config_file=""
+global_config_exists=0
+user_config_exists=0
 
 if [[ -f "$GLOBAL_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$GLOBAL_CONFIG"
     config_loaded=1
     loaded_config_file="$GLOBAL_CONFIG"
+    global_config_exists=1
 fi
 if [[ -f "$USER_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$USER_CONFIG"
     config_loaded=1
     loaded_config_file="$USER_CONFIG"
+    user_config_exists=1
+fi
+
+# Warn if both configs exist
+if [[ $global_config_exists -eq 1 && $user_config_exists -eq 1 ]]; then
+    multiple_configs_warning="${YELLOW}⚠${NC} Multiple config files detected:
+    Global: ${GLOBAL_CONFIG}
+    User:   ${USER_CONFIG} ${BOLD}(dominant)${NOBOLD}
+    → User config overrides global config settings!"
 fi
 
 if [[ "$config_loaded" -eq 0 ]]; then
@@ -1716,6 +1728,11 @@ EOF
 
 # Validate configuration and system prerequisites
 config_check_command() {
+    if [[ -n "${multiple_configs_warning:-}" ]]; then
+        echo -e "${multiple_configs_warning}"
+        echo
+    fi
+    
     echo -e "${BOLD}Configuration & Prerequisites Check${NOBOLD}"
     echo "===================================="
     echo
@@ -1832,15 +1849,15 @@ config_check_command() {
 show_readme() {
     cat <<'EOF'
 # borgctl - Borg Backup Wrapper Script
-Version 20251015.06
+Version 20251015.07
 
-## Changes in This Version (v.06)
-- FIXED: init-config now works without existing config file
-- IMPROVED: Better prompts when config exists (migrate/overwrite/cancel)
-- init-config no longer requires config to be present before execution
+## Changes in This Version (v.07)
+- ADDED: Warning when both global and user config exist
+- Shows which config is dominant (user config overrides global)
+- Helps prevent configuration conflicts
+- Previous (v.06): Fixed init-config to work without existing config file
 - Previous (v.05): Backup timeout is now configurable via borg_backup_timeout
 - Previous (v.04): Size reporting now uses Deduplicated size (actual disk usage)
-- Previous (v.03): Removed spinner, simple elapsed time counter
 
 ## Features
 - Automated backup creation with compression and deduplication
@@ -1862,6 +1879,16 @@ Version 20251015.06
 4. chmod 600 ~/.config/borgctl.conf
 5. ./borgctl.sh config-check
 6. ./borgctl.sh repo init
+
+## Configuration Hierarchy
+The script supports two configuration locations:
+- **Global**: /etc/borgctl.conf (system-wide)
+- **User**: ~/.config/borgctl.conf (user-specific)
+
+If both exist, the user config takes precedence and overrides global settings.
+The script will warn you when both configs are detected.
+
+Recommendation: Use only one config file to avoid confusion.
 
 ## Configuration
 Important: If your repository was moved or relocated, add to your config:
@@ -2027,7 +2054,13 @@ show_help() {
 
 #====================[ main ]====================
 main() {
-    if [[ $# -gt 0 && "$1" != "--help" && "$1" != "help" && "$1" != "completion" && "$1" != "init-config" && "$1" != "config-check" && "$1" != "readme" && "$1" != "-u" ]]; then
+    # Show multiple configs warning for commands that use config
+    if [[ $# -gt 0 && "$1" != "--help" && "$1" != "help" && "$1" != "completion" && "$1" != "init-config" && "$1" != "readme" && "$1" != "-u" ]]; then
+        if [[ -n "${multiple_configs_warning:-}" ]]; then
+            echo -e "${multiple_configs_warning}" 1>&2
+            echo 1>&2
+        fi
+        
         if [[ "$debug" == "1" ]]; then
             debug_msg "Using config: ${loaded_config_file}"
         else
