@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251102.01
+# Version=20251102.02
 # Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
@@ -164,51 +164,57 @@ if [[ -f "$USER_CONFIG" ]]; then
 fi
 
 if [[ "$config_loaded" -eq 0 ]]; then
-    log_status "[${RED}${CROSSMARK}${NC}] No configuration file found!" 1
-    echo "Run: $0 init-config to create a configuration file"
-    exit "$EXIT_CONFIG_ERROR"
-fi
-
-# Validate required configuration variables
-if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
-    log_status "[${RED}${CROSSMARK}${NC}] No valid configuration found!" 1
-    exit "$EXIT_CONFIG_ERROR"
-fi
-
-# Validate and export borg passphrase early
-if [[ -z "${borg_passphrase:-}" ]] || [[ "${borg_passphrase}" =~ ^[[:space:]]*$ ]]; then
-    log_status "[${RED}${CROSSMARK}${NC}] borg_passphrase is empty or not set in config!" 1
-    exit "$EXIT_CONFIG_ERROR"
-fi
-export BORG_PASSPHRASE="${borg_passphrase}"
-
-# Export borg environment variables early so they're available for all operations
-if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
-    export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
-    if [[ "$debug" == "1" ]]; then
-        debug_msg "BORG_RELOCATED_REPO_ACCESS_IS_OK=yes (from config)"
+    # Allow init-config, help, readme, and completion to run without config
+    if [[ "${1:-}" != "init-config" && "${1:-}" != "help" && "${1:-}" != "--help" && "${1:-}" != "readme" && "${1:-}" != "completion" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] No configuration file found!" 1
+        echo "Run: $0 init-config to create a configuration file"
+        exit "$EXIT_CONFIG_ERROR"
     fi
 fi
 
-# Validate SSH key exists before building BORG_RSH
-if [[ ! -f "${ssh_remote_authfile:-}" ]]; then
-    log_status "[${RED}${CROSSMARK}${NC}] SSH key file not found: ${ssh_remote_authfile:-'(not set)'}" 1
-    exit "$EXIT_CONFIG_ERROR"
-fi
-
-# Build and export BORG_RSH early
-export BORG_RSH="ssh -p ${ssh_remote_port:-22} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
-
-# Validate compression setting (default to lz4 if not set or invalid)
-if [[ -z "${compression:-}" ]]; then
-    compression="lz4"
-    if [[ "$debug" == "1" ]]; then
-        debug_msg "Compression not set, defaulting to: ${compression}"
+# Only validate config if it was loaded
+if [[ "$config_loaded" -eq 1 ]]; then
+    # Validate required configuration variables
+    if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] No valid configuration found!" 1
+        exit "$EXIT_CONFIG_ERROR"
     fi
-fi
 
-# Validate minimum borg version if set in config
-borg_min_version="${borg_min_version:-1.1.0}"
+    # Validate and export borg passphrase early
+    if [[ -z "${borg_passphrase:-}" ]] || [[ "${borg_passphrase}" =~ ^[[:space:]]*$ ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] borg_passphrase is empty or not set in config!" 1
+        exit "$EXIT_CONFIG_ERROR"
+    fi
+    export BORG_PASSPHRASE="${borg_passphrase}"
+
+    # Export borg environment variables early so they're available for all operations
+    if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+        export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
+        if [[ "$debug" == "1" ]]; then
+            debug_msg "BORG_RELOCATED_REPO_ACCESS_IS_OK=yes (from config)"
+        fi
+    fi
+
+    # Validate SSH key exists before building BORG_RSH
+    if [[ ! -f "${ssh_remote_authfile:-}" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] SSH key file not found: ${ssh_remote_authfile:-'(not set)'}" 1
+        exit "$EXIT_CONFIG_ERROR"
+    fi
+
+    # Build and export BORG_RSH early
+    export BORG_RSH="ssh -p ${ssh_remote_port:-22} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
+
+    # Validate compression setting (default to lz4 if not set or invalid)
+    if [[ -z "${compression:-}" ]]; then
+        compression="lz4"
+        if [[ "$debug" == "1" ]]; then
+            debug_msg "Compression not set, defaulting to: ${compression}"
+        fi
+    fi
+
+    # Validate minimum borg version if set in config
+    borg_min_version="${borg_min_version:-1.1.0}"
+fi
 
 #====================[ run lock (acquire on demand) ]====================
 LOCK_DIR="/var/lock"; [[ -w "$LOCK_DIR" ]] || LOCK_DIR="/tmp"
@@ -1595,17 +1601,36 @@ init_config_wizard() {
     echo
 
     if [[ -f "$config_path" ]]; then
+        # Config exists - ask what to do
         echo -e "${YELLOW}Config file already exists: $config_path${NC}"
-        read -rp "Migrate existing config to new template? (y/N): " confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            migrate=1
-        else
-            read -rp "Overwrite with new template? (y/N): " confirm
-            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo
+        echo "Options:"
+        echo "  1) Migrate existing config to new template (keeps your settings)"
+        echo "  2) Overwrite with fresh template (loses your settings)"
+        echo "  3) Cancel"
+        echo
+        read -rp "Choose option [1-3]: " choice
+        
+        case "$choice" in
+            1)
+                migrate=1
+                echo "→ Migrating existing configuration..."
+                ;;
+            2)
+                migrate=0
+                echo "→ Creating fresh configuration..."
+                ;;
+            *)
                 echo "Cancelled."
                 return "$EXIT_USER_ABORT"
-            fi
-        fi
+                ;;
+        esac
+        echo
+    else
+        # No config exists - create new one
+        echo "No configuration file found. Creating new configuration..."
+        echo "Location: $config_path"
+        echo
     fi
 
     local config_dir
@@ -1663,7 +1688,6 @@ EOF
         echo "  Old config: $backup_path"
         echo "  New config: $config_path"
     else
-        echo
         echo "Creating example configuration at: $config_path"
         generate_example_config > "$config_path"
         echo
@@ -1808,15 +1832,15 @@ config_check_command() {
 show_readme() {
     cat <<'EOF'
 # borgctl - Borg Backup Wrapper Script
-Version 20251015.05
+Version 20251015.06
 
-## Changes in This Version (v.05)
-- CHANGED: Backup timeout is now configurable via borg_backup_timeout
-- Default is no timeout (infinite) - set borg_backup_timeout in config to limit
-- Separate timeout settings: borg_operation_timeout for info/list, borg_backup_timeout for backups
+## Changes in This Version (v.06)
+- FIXED: init-config now works without existing config file
+- IMPROVED: Better prompts when config exists (migrate/overwrite/cancel)
+- init-config no longer requires config to be present before execution
+- Previous (v.05): Backup timeout is now configurable via borg_backup_timeout
 - Previous (v.04): Size reporting now uses Deduplicated size (actual disk usage)
 - Previous (v.03): Removed spinner, simple elapsed time counter
-- Previous (v.02): Fixed size reporting and removed space saved calculation
 
 ## Features
 - Automated backup creation with compression and deduplication
