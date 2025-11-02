@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251015.04
+# Version=20251102.01
 # Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
@@ -613,11 +613,20 @@ backup_create() {
         "${exclude_args[@]}"
     )
 
-    local timeout_val="${borg_operation_timeout:-3600}"
+    local timeout_val="${borg_backup_timeout:-}"
     local borg_log_file
     borg_log_file=$(tempfile)
 
-    timeout "$timeout_val" borg create \
+    # Use timeout only if configured, otherwise run without timeout (infinite)
+    local timeout_cmd=""
+    if [[ -n "$timeout_val" ]]; then
+        timeout_cmd="timeout $timeout_val"
+        debug_msg "Using backup timeout: ${timeout_val}s"
+    else
+        debug_msg "No backup timeout configured (infinite)"
+    fi
+
+    $timeout_cmd borg create \
         "${borg_create_opts[@]}" \
         --stats \
         --progress \
@@ -628,7 +637,11 @@ backup_create() {
     echo
 
     if [[ $rc -eq 124 ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] Backup timed out after ${timeout_val}s" 1
+        if [[ -n "$timeout_val" ]]; then
+            log_status "[${RED}${CROSSMARK}${NC}] Backup timed out after ${timeout_val}s" 1
+        else
+            log_status "[${RED}${CROSSMARK}${NC}] Backup timed out" 1
+        fi
         send_heartbeat "failure"
         return "$EXIT_BORG_ERROR"
     fi
@@ -1549,7 +1562,11 @@ borg_keep_monthly="12"
 borg_keep_yearly="3"
 
 borg_compact_threshold="10"
-borg_operation_timeout="3600"
+borg_operation_timeout="300"
+
+# Backup creation timeout (empty = no timeout/infinite, recommended for large backups)
+# borg_backup_timeout="7200"
+
 check_remote_disk_space="yes"
 min_remote_space_mb="1024"
 
@@ -1629,7 +1646,8 @@ borg_keep_weekly="${borg_keep_weekly:-12}"
 borg_keep_monthly="${borg_keep_monthly:-12}"
 borg_keep_yearly="${borg_keep_yearly:-3}"
 borg_compact_threshold="${borg_compact_threshold:-10}"
-borg_operation_timeout="${borg_operation_timeout:-3600}"
+borg_operation_timeout="${borg_operation_timeout:-300}"
+$(if [[ -n "${borg_backup_timeout:-}" ]]; then echo "borg_backup_timeout=\"${borg_backup_timeout}\""; else echo "# borg_backup_timeout=\"7200\""; fi)
 check_remote_disk_space="${check_remote_disk_space:-yes}"
 min_remote_space_mb="${min_remote_space_mb:-1024}"
 $(if [[ -n "${pre_backup_cmd:-}" ]]; then echo "pre_backup_cmd=\"${pre_backup_cmd}\""; else echo "# pre_backup_cmd=\"systemctl stop myapp\""; fi)
@@ -1790,15 +1808,15 @@ config_check_command() {
 show_readme() {
     cat <<'EOF'
 # borgctl - Borg Backup Wrapper Script
-Version 20251015.04
+Version 20251015.05
 
-## Changes in This Version (v.04)
-- CHANGED: Size reporting now uses Deduplicated size (actual disk usage)
-- Shows real space used on disk after deduplication (e.g., 816.87 GB)
-- Labels changed to "Disk usage before/after" for clarity
+## Changes in This Version (v.05)
+- CHANGED: Backup timeout is now configurable via borg_backup_timeout
+- Default is no timeout (infinite) - set borg_backup_timeout in config to limit
+- Separate timeout settings: borg_operation_timeout for info/list, borg_backup_timeout for backups
+- Previous (v.04): Size reporting now uses Deduplicated size (actual disk usage)
 - Previous (v.03): Removed spinner, simple elapsed time counter
 - Previous (v.02): Fixed size reporting and removed space saved calculation
-- Previous (v.01): Fixed timeout_val variable in repo_maintain()
 
 ## Features
 - Automated backup creation with compression and deduplication
@@ -1826,6 +1844,11 @@ Important: If your repository was moved or relocated, add to your config:
 BORG_RELOCATED_REPO_ACCESS_IS_OK="yes"
 
 This will suppress all repository ID mismatch warnings and allow operations to proceed automatically.
+
+For large backups, you can set a timeout (in seconds):
+borg_backup_timeout="7200"
+
+Leave it unset or commented out for infinite timeout (recommended for large backups).
 
 ## Cache Rebuild
 If you restored your repository from backup or have cache issues:
