@@ -1,0 +1,4047 @@
+#!/bin/bash
+# Version=20251227.113
+# DNSSEC Key Rollover Monitoring for BIND9 - Email Notification Only
+
+set -euo pipefail
+
+# Set PATH for cron compatibility - include common system directories
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+readonly SCRIPT_NAME=$(basename "$0")
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly VERSION="20251227.113"
+readonly LOG_ENABLED=true
+DEBUG="${DEBUG:-false}"
+
+# Configuration variables
+readonly GLOBAL_CONFIG="/etc/dnssecctl.conf"
+readonly USER_CONFIG="$HOME/.dnssecctl.conf"
+readonly LOCAL_CONFIG="$SCRIPT_DIR/dnssecctl.conf"
+
+EMAIL=""
+LOGFILE=""
+BIND_LOGFILE=""  # BIND log file for orphaned key detection (optional)
+BIND_CONF_FILE=""  # BIND configuration file (default: /etc/bind/named.conf)
+BIND_CONFIG_DIR=""
+KEYS_DIR=""
+ZONE_DIR=""  # Directory where zone files are stored
+DNS_SERVER=""  # DNS server for DNSKEY verification (default: 1.1.1.1)
+MONITORED_DOMAINS=()
+MONITORED_DOMAINS_FROM_CONFIG=()
+EXCLUDE_DOMAINS=()
+
+readonly TMPFILE=$(mktemp /tmp/dnssecctl-alert.XXXXXX)
+trap cleanup EXIT
+
+# Colors
+readonly COLOR_RED='\033[0;31m'
+readonly COLOR_GREEN='\033[0;32m'
+readonly COLOR_YELLOW='\033[1;33m'
+readonly COLOR_BLUE='\033[0;34m'
+readonly COLOR_CYAN='\033[0;36m'
+readonly COLOR_BOLD='\033[1m'
+readonly COLOR_RESET='\033[0m'
+
+# ============================================================================
+# Logging Functions
+# ============================================================================
+
+color_tag() {
+    local color="$1"
+    local symbol="$2"
+    local message="$3"
+    local indent="${4:-}"
+
+    if [[ -t 1 ]]; then
+        echo -e "${indent}[${COLOR_BOLD}${color}${symbol}${COLOR_RESET}] $(date '+%Y-%m-%d %H:%M:%S') - ${message}" >&2
+    else
+        echo "${indent}[${symbol}] $(date '+%Y-%m-%d %H:%M:%S') - ${message}" >&2
+    fi
+}
+
+log_info() {
+    local indent="${INDENT:-}"
+    if [[ "$LOG_ENABLED" == true ]]; then
+        color_tag "$COLOR_YELLOW" "i" "$*" "$indent"
+    fi
+}
+
+log_error() {
+    local indent="${INDENT:-}"
+    color_tag "$COLOR_RED" "ERROR" "$*" "$indent"
+}
+
+log_warning() {
+    local indent="${INDENT:-}"
+    color_tag "$COLOR_YELLOW" "WARNING" "$*" "$indent"
+}
+
+log_debug() {
+    if [[ "${DEBUG:-false}" == true ]]; then
+        echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - $*" >&2
+    fi
+}
+
+log_success() {
+    local indent="${INDENT-  }"
+    color_tag "$COLOR_GREEN" "✓" "$*" "$indent"
+}
+
+log_action_required() {
+    local indent="${INDENT:-}"
+    local domain="$1"
+    local message="$2"
+    # Use [!] with bold yellow exclamation mark
+    if [[ -t 1 ]]; then
+        echo -e "${indent}[${COLOR_BOLD}${COLOR_YELLOW}!${COLOR_RESET}] $domain - $message" >&2
+    else
+        echo "${indent}[!] $domain - $message" >&2
+    fi
+}
+
+log_monitoring() {
+    # Add timestamp before monitoring message
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" >&2
+}
+
+log_dnssec_inactive() {
+    local indent="${INDENT:-}"
+    local domain="$1"
+    # Just bold checkbox (no color) and domain - makes green stand out more
+    if [[ -t 1 ]]; then
+        echo -e "${indent}[${COLOR_BOLD}-${COLOR_RESET}] $domain" >&2
+    else
+        echo "${indent}[-] $domain" >&2
+    fi
+}
+
+log_dnssec_active() {
+    local indent="${INDENT:-}"
+    local domain="$1"
+    # Just checkbox and domain - bold green checkmark
+    # No rollover info needed - if rollover is in progress, full phase display is shown
+    if [[ -t 1 ]]; then
+        echo -e "${indent}[${COLOR_BOLD}${COLOR_GREEN}✓${COLOR_RESET}] $domain" >&2
+    else
+        echo "${indent}[✓] $domain" >&2
+    fi
+}
+
+log_rollover_detail() {
+    local indent="${INDENT:-}"
+    local symbol="$1"
+    shift
+    # Use [!] for warnings (yellow), [✓] for success (green), > for info (no color)
+    if [[ "$symbol" == "!" ]]; then
+        # Bold yellow [!] for warning messages
+        if [[ -t 1 ]]; then
+            echo -e "${indent}  [${COLOR_BOLD}${COLOR_YELLOW}!${COLOR_RESET}] $*" >&2
+        else
+            echo "${indent}  [!] $*" >&2
+        fi
+    elif [[ "$symbol" == ">" ]]; then
+        # > for informative text (no color, no brackets)
+        echo "${indent}  > $*" >&2
+    else
+        # Default to bold green [✓] for success messages
+        if [[ -t 1 ]]; then
+            echo -e "${indent}  [${COLOR_BOLD}${COLOR_GREEN}✓${COLOR_RESET}] $*" >&2
+        else
+            echo "${indent}  [✓] $*" >&2
+        fi
+    fi
+}
+
+# Checkbox output functions (for step-by-step feedback)
+checkbox_done() {
+    if [[ -t 1 ]]; then
+        echo -e "[${COLOR_BOLD}${COLOR_GREEN}✓${COLOR_RESET}] $*"
+    else
+        echo "[✓] $*"
+    fi
+}
+
+checkbox_fail() {
+    if [[ -t 1 ]]; then
+        echo -e "[${COLOR_BOLD}${COLOR_RED}✗${COLOR_RESET}] $*"
+    else
+        echo "[✗] $*"
+    fi
+}
+
+checkbox_pending() {
+    echo "$*"
+}
+
+log_to_file() {
+    local log_dir
+    log_dir=$(dirname "$LOGFILE")
+    if [[ -w "$log_dir" ]]; then
+        echo "$*" >> "$LOGFILE"
+    fi
+}
+
+# ============================================================================
+# Help Functions
+# ============================================================================
+
+show_usage() {
+    cat << EOF
+Usage: $SCRIPT_NAME [OPTIONS] [DOMAIN...]
+
+DNSSEC Key Rollover Monitoring - Email Notification Only
+
+OPTIONS:
+    -h, --help                      Show this help message
+    -v, --version                   Show version information
+    -d, --debug                     Enable debug output
+    -all, --all                     Monitor all domains in BIND configuration
+    --validate DOMAIN               Show validation info for domain
+    --printkeys DOMAIN              Print all DNSSEC keys (DS & DNSKEY records)
+    --abort-rollover DOMAIN         Abort current rollover for domain
+    --initiate-rollover DOMAIN      Initiate KSK rollover for domain
+                         --force    Force initiate even if key not ready (bypass safety period)
+    --force-rollover DOMAIN         Force Phase 5 completion (delete old keys)
+
+ARGUMENTS:
+    DOMAIN               Domain(s) to monitor (optional, uses config if not specified)
+
+EXAMPLES:
+    $ $SCRIPT_NAME domain.tld
+    $ $SCRIPT_NAME -all
+    $ $SCRIPT_NAME --validate domain.tld
+    $ $SCRIPT_NAME --printkeys domain.tld
+    $ $SCRIPT_NAME --abort-rollover domain.tld
+    $ $SCRIPT_NAME --initiate-rollover domain.tld
+    $ $SCRIPT_NAME --initiate-rollover domain.tld --force
+    $ $SCRIPT_NAME --force-rollover domain.tld
+    $ $SCRIPT_NAME domain.tld example.com
+
+DESCRIPTION:
+    Monitors DNSSEC key rollovers initiated by BIND9.
+    Sends email notification when new keys need to be registered.
+    Does NOT perform automatic API updates.
+
+    Use -all to monitor all domains configured in BIND.
+    Without -all, specify domain(s) or use domains from config file.
+
+EXIT CODES:
+    0    Success
+    1    General error
+    2    Invalid arguments
+    3    Missing dependencies
+    4    Configuration error
+
+EOF
+}
+
+show_version() {
+    cat << EOF
+$SCRIPT_NAME version $VERSION
+
+DNSSEC Monitoring Tool - Email Notification Only
+No automatic API updates - Manual registration required
+
+EOF
+}
+
+# ============================================================================
+# Configuration Functions
+# ============================================================================
+
+load_config() {
+    local config_file="$1"
+
+    if [[ ! -f "$config_file" ]]; then
+        return 1
+    fi
+
+    if [[ ! -r "$config_file" ]]; then
+        log_error "Cannot read configuration file: $config_file"
+        return 1
+    fi
+
+    log_debug "Loading configuration from: $config_file"
+    # shellcheck source=/dev/null
+    source "$config_file"
+    return 0
+}
+
+load_all_configs() {
+    log_debug "Loading configuration files..."
+
+    # Try global config
+    if [[ -f "$GLOBAL_CONFIG" ]]; then
+        load_config "$GLOBAL_CONFIG" || return 1
+        log_debug "Loaded global config: $GLOBAL_CONFIG"
+    else
+        log_debug "No global config found at: $GLOBAL_CONFIG"
+    fi
+
+    # Try user config
+    if [[ -f "$USER_CONFIG" ]]; then
+        load_config "$USER_CONFIG"
+        log_debug "Loaded user config: $USER_CONFIG"
+    else
+        log_debug "No user config found at: $USER_CONFIG"
+    fi
+
+    # Try local config
+    if [[ -f "$LOCAL_CONFIG" ]]; then
+        load_config "$LOCAL_CONFIG"
+        log_debug "Loaded local config: $LOCAL_CONFIG"
+    else
+        log_debug "No local config found at: $LOCAL_CONFIG"
+    fi
+
+    # Set defaults if not configured
+    EMAIL="${EMAIL:-root@localhost}"
+    LOGFILE="${LOGFILE:-/var/log/dnssecctl.log}"
+    BIND_CONF_FILE="${BIND_CONF_FILE:-/etc/bind/named.conf}"
+    BIND_CONFIG_DIR="${BIND_CONFIG_DIR:-/etc/bind}"
+    KEYS_DIR="${KEYS_DIR:-/etc/bind/keys}"
+    DNS_SERVER="${DNS_SERVER:-1.1.1.1}"
+
+    # Save domains from config for later comparison with user-specified domains
+    MONITORED_DOMAINS_FROM_CONFIG=("${MONITORED_DOMAINS[@]}")
+
+    log_debug "Configuration loaded successfully"
+    return 0
+}
+
+# ============================================================================
+# Validation Functions
+# ============================================================================
+
+check_dependencies() {
+    local missing_deps=()
+    local required_commands=('rndc' 'dnssec-dsfromkey' 'mail' 'grep' 'awk' 'sort' 'dig')
+
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing_deps+=("$cmd")
+        fi
+    done
+
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        log_error "Missing required dependencies: ${missing_deps[*]}"
+        log_error "Please install missing dependencies"
+        exit 3
+    fi
+
+    log_debug "All dependencies are available"
+}
+
+validate_directory_exists() {
+    local dir="$1"
+    local desc="$2"
+
+    if [[ ! -d "$dir" ]]; then
+        log_error "$desc directory not found: $dir"
+        return 1
+    fi
+
+    if [[ ! -r "$dir" ]]; then
+        log_error "$desc directory not readable: $dir"
+        return 1
+    fi
+
+    return 0
+}
+
+validate_email() {
+    local email="$1"
+
+    if [[ -z "$email" ]]; then
+        log_error "Email address not configured"
+        return 1
+    fi
+
+    if [[ ! "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        log_error "Invalid email address: $email"
+        return 1
+    fi
+
+    return 0
+}
+
+validate_domain_name() {
+    local domain="$1"
+
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        log_error "Invalid domain name: $domain"
+        return 1
+    fi
+
+    return 0
+}
+
+validate_configuration() {
+    log_debug "Validating configuration..."
+
+    validate_directory_exists "$BIND_CONFIG_DIR" "BIND configuration" || return 1
+    validate_directory_exists "$KEYS_DIR" "DNSSEC keys" || return 1
+    validate_email "$EMAIL" || return 1
+
+    # Validate monitored domains
+    for domain in "${MONITORED_DOMAINS[@]}"; do
+        validate_domain_name "$domain" || return 1
+    done
+
+    # Validate excluded domains
+    for domain in "${EXCLUDE_DOMAINS[@]}"; do
+        validate_domain_name "$domain" || return 1
+    done
+
+    # Check if log directory is writable
+    local log_dir
+    log_dir=$(dirname "$LOGFILE")
+    if [[ ! -d "$log_dir" ]]; then
+        log_warning "Log directory does not exist: $log_dir"
+    elif [[ ! -w "$log_dir" ]]; then
+        log_warning "Log directory not writable: $log_dir"
+    fi
+
+    log_debug "Configuration validated successfully"
+    return 0
+}
+
+# ============================================================================
+# Argument Parsing
+# ============================================================================
+
+VALIDATE_MODE=false
+VALIDATE_DOMAIN=""
+PRINTKEYS_MODE=false
+PRINTKEYS_DOMAIN=""
+ABORT_ROLLOVER_MODE=false
+ABORT_ROLLOVER_DOMAIN=""
+INITIATE_ROLLOVER_MODE=false
+INITIATE_ROLLOVER_DOMAIN=""
+FORCE_INITIATE=false
+FORCE_ROLLOVER_MODE=false
+FORCE_ROLLOVER_DOMAIN=""
+ALL_DOMAINS=false
+
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -v|--version)
+                show_version
+                exit 0
+                ;;
+            -d|--debug)
+                DEBUG=true
+                shift
+                ;;
+            -all|--all)
+                ALL_DOMAINS=true
+                shift
+                ;;
+            --validate)
+                VALIDATE_MODE=true
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Option --validate requires a domain"
+                    show_usage
+                    exit 2
+                fi
+                VALIDATE_DOMAIN="$2"
+                MONITORED_DOMAINS+=("$2")
+                shift 2
+                ;;
+            --printkeys)
+                PRINTKEYS_MODE=true
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Option --printkeys requires a domain"
+                    show_usage
+                    exit 2
+                fi
+                PRINTKEYS_DOMAIN="$2"
+                MONITORED_DOMAINS+=("$2")
+                shift 2
+                ;;
+            --abort-rollover)
+                ABORT_ROLLOVER_MODE=true
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Option --abort-rollover requires a domain"
+                    show_usage
+                    exit 2
+                fi
+                ABORT_ROLLOVER_DOMAIN="$2"
+                MONITORED_DOMAINS+=("$2")
+                shift 2
+                ;;
+            --initiate-rollover)
+                INITIATE_ROLLOVER_MODE=true
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Option --initiate-rollover requires a domain"
+                    show_usage
+                    exit 2
+                fi
+                INITIATE_ROLLOVER_DOMAIN="$2"
+                MONITORED_DOMAINS+=("$2")
+                shift 2
+                # Check if next argument is --force
+                if [[ "${1:-}" == "--force" ]]; then
+                    FORCE_INITIATE=true
+                    shift
+                fi
+                ;;
+            --force-rollover)
+                FORCE_ROLLOVER_MODE=true
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Option --force-rollover requires a domain"
+                    show_usage
+                    exit 2
+                fi
+                FORCE_ROLLOVER_DOMAIN="$2"
+                MONITORED_DOMAINS+=("$2")
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 2
+                ;;
+            *)
+                # Positional argument = domain
+                MONITORED_DOMAINS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Track how many domains came from config (before argument parsing)
+    # vs. how many were added by user during argument parsing
+    local config_domain_count=${#MONITORED_DOMAINS_FROM_CONFIG[@]}
+    local total_domain_count=${#MONITORED_DOMAINS[@]}
+    local user_domain_count=$((total_domain_count - config_domain_count))
+
+    # If -all flag is set:
+    # - Clear config domains (they should be ignored)
+    # - Reject if user specified domains on command line
+    if [[ "$ALL_DOMAINS" == true ]]; then
+        if [[ $user_domain_count -gt 0 ]]; then
+            log_error "Cannot use -all together with specific domains"
+            show_usage
+            exit 2
+        fi
+
+        # Clear all domains when using -all
+        MONITORED_DOMAINS=()
+        log_debug "-all flag: Ignoring domains from config, will monitor all BIND zones"
+    fi
+
+    # If neither domains nor -all specified, check config
+    if [[ "$ALL_DOMAINS" == false ]] && [[ ${#MONITORED_DOMAINS[@]} -eq 0 ]]; then
+        # Will use domains from config if available
+        :
+    fi
+}
+
+# ============================================================================
+# BIND Zone Functions
+# ============================================================================
+
+find_zones() {
+    log_debug "Finding BIND zones in $BIND_CONFIG_DIR"
+    local zones
+
+    # Method 1: Search all .conf files recursively in BIND_CONFIG_DIR
+    # This catches zones defined in any included config file
+    if [[ -d "$BIND_CONFIG_DIR" ]]; then
+        zones=$(find "$BIND_CONFIG_DIR" -type f -name "*.conf" -exec grep -h '^[[:space:]]*zone' {} \; 2>/dev/null | \
+            grep -v '//' | \
+            grep -v '^#' | \
+            awk '{print $2}' | \
+            tr -d '";' | \
+            sort -u)
+    fi
+
+    # Method 2: Fallback to specific files if Method 1 found nothing
+    if [[ -z "$zones" ]]; then
+        log_debug "Trying fallback method with specific config files"
+        zones=$(grep -h '^zone' \
+            "$BIND_CONFIG_DIR/domains-master.conf" \
+            "$BIND_CONFIG_DIR/domains-slave.conf" \
+            "$BIND_CONFIG_DIR/named.conf" \
+            2>/dev/null | \
+            grep -v '//' | \
+            awk '{print $2}' | \
+            tr -d '";' | \
+            sort -u)
+    fi
+
+    if [[ -z "$zones" ]]; then
+        log_error "No zones found in BIND configuration"
+        log_error "Searched in: $BIND_CONFIG_DIR"
+        return 1
+    fi
+
+    local zone_count
+    zone_count=$(echo "$zones" | wc -l)
+    log_debug "Found $zone_count zone(s) in BIND configuration"
+
+    echo "$zones"
+    return 0
+}
+
+is_zone_skippable() {
+    local zone="$1"
+
+    # Skip reverse zones, root zone, localhost, root-servers.net
+    if [[ "$zone" =~ ^[0-9]+\.|\.arpa$|^\.$|^localhost$|^root-servers\.net$ ]]; then
+        log_debug "Skipping zone: $zone (reverse/system zone)"
+        return 0
+    fi
+
+    return 1
+}
+
+should_monitor_zone() {
+    local zone="$1"
+
+    # Check if zone is in EXCLUDE_DOMAINS (exact match or subdomain)
+    if [[ ${#EXCLUDE_DOMAINS[@]} -gt 0 ]]; then
+        local excluded_domain
+        for excluded_domain in "${EXCLUDE_DOMAINS[@]}"; do
+            # Exact match
+            if [[ "$zone" == "$excluded_domain" ]]; then
+                log_debug "Skipping zone: $zone (in EXCLUDE_DOMAINS)"
+                return 1
+            fi
+            # Subdomain match: zone ends with .excluded_domain
+            if [[ "$zone" == *".${excluded_domain}" ]]; then
+                log_debug "Skipping zone: $zone (subdomain of excluded domain: $excluded_domain)"
+                return 1
+            fi
+        done
+    fi
+
+    # If --all flag is set, monitor all zones (except excluded ones)
+    if [[ "$ALL_DOMAINS" == true ]]; then
+        log_debug "Monitoring zone: $zone (--all flag set)"
+        return 0
+    fi
+
+    # If no specific domains configured, DON'T monitor any zones
+    # User must explicitly use --all or specify domains
+    if [[ ${#MONITORED_DOMAINS[@]} -eq 0 ]]; then
+        log_debug "Skipping zone: $zone (no domains configured, use --all or specify domains)"
+        return 1
+    fi
+
+    # Check if zone is in MONITORED_DOMAINS (exact match only)
+    local monitored_domain
+    for monitored_domain in "${MONITORED_DOMAINS[@]}"; do
+        # Exact match only
+        if [[ "$zone" == "$monitored_domain" ]]; then
+            log_debug "Monitoring zone: $zone (exact match: $monitored_domain)"
+            return 0
+        fi
+    done
+
+    # Zone not in monitored domains
+    log_debug "Skipping zone: $zone (not in MONITORED_DOMAINS or its subdomains)"
+    return 1
+}
+
+check_zone_dnssec() {
+    local zone="$1"
+
+    log_debug "Checking DNSSEC status for zone: $zone"
+
+    local status
+    status=$(rndc dnssec -status "$zone" 2>&1)
+
+    # Check if zone has DNSSEC enabled
+    if echo "$status" | grep -q "does not have dnssec-policy"; then
+        log_debug "Zone $zone does not have DNSSEC enabled"
+        return 1
+    fi
+
+    echo "$status"
+    return 0
+}
+
+# ============================================================================
+# Key Analysis Functions
+# ============================================================================
+
+extract_key_creation_date() {
+    local keyfile="$1"
+
+    if [[ ! -f "$keyfile" ]]; then
+        log_debug "Key file not found: $keyfile"
+        echo "unknown"
+        return 1
+    fi
+
+    # Try to get creation time from file modification time
+    local creation_timestamp
+    creation_timestamp=$(stat -c %Y "$keyfile" 2>/dev/null || stat -f %m "$keyfile" 2>/dev/null)
+
+    if [[ -n "$creation_timestamp" ]]; then
+        date -d "@$creation_timestamp" '+%d.%m.%Y, %H:%M' 2>/dev/null || \
+        date -r "$creation_timestamp" '+%d.%m.%Y, %H:%M' 2>/dev/null || \
+        echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
+calculate_days_since_creation() {
+    local keyfile="$1"
+
+    if [[ ! -f "$keyfile" ]]; then
+        echo "0"
+        return 1
+    fi
+
+    # Get creation timestamp
+    local creation_timestamp
+    creation_timestamp=$(stat -c %Y "$keyfile" 2>/dev/null || stat -f %m "$keyfile" 2>/dev/null)
+
+    if [[ -z "$creation_timestamp" ]]; then
+        echo "0"
+        return 1
+    fi
+
+    # Calculate days since creation
+    local now_timestamp
+    now_timestamp=$(date +%s)
+    local diff_seconds=$((now_timestamp - creation_timestamp))
+    local diff_days=$((diff_seconds / 86400))
+
+    echo "$diff_days"
+}
+
+extract_rollover_date() {
+    local status="$1"
+    local new_key_tag="$2"
+
+    # Try to find "next key event" timestamp for the new key
+    local next_event
+    next_event=$(echo "$status" | grep -A 30 "key: $new_key_tag" | grep "next key event:" | head -1 | sed 's/.*next key event: //')
+
+    if [[ -n "$next_event" ]]; then
+        # Parse the date (format: "Tue Jan 14 10:30:00 2025")
+        # Convert to DD.MM.YYYY, HH:MM format
+        local parsed_date
+        parsed_date=$(date -d "$next_event" '+%d.%m.%Y, %H:%M' 2>/dev/null || echo "")
+        if [[ -n "$parsed_date" ]]; then
+            echo "$parsed_date"
+            return 0
+        fi
+    fi
+
+    # Fallback: Try to get DS publish time
+    local ds_publish
+    ds_publish=$(echo "$status" | grep -A 30 "key: $new_key_tag" | grep "  - ds:" | grep -oP 'publish: \K[^,]+' | head -1)
+
+    if [[ -n "$ds_publish" ]]; then
+        local parsed_date
+        parsed_date=$(date -d "$ds_publish" '+%d.%m.%Y, %H:%M' 2>/dev/null || echo "")
+        if [[ -n "$parsed_date" ]]; then
+            echo "$parsed_date"
+            return 0
+        fi
+    fi
+
+    # Last fallback: Use current date and time
+    date '+%d.%m.%Y, %H:%M'
+    return 0
+}
+
+normalize_dnskey_record() {
+    # Accept input from stdin or parameter
+    local record
+    if [[ -n "${1:-}" ]]; then
+        record="$1"
+    else
+        # Read all lines and join them
+        record=$(cat)
+    fi
+
+    # Remove all newlines and extra whitespace first
+    record=$(echo "$record" | tr -d '\n' | tr -s ' ')
+
+    # DNSKEY format: zone TTL IN DNSKEY flags protocol algorithm base64key
+    # Remove all whitespace from the base64 key part (field 8+)
+    echo "$record" | awk '{
+        # Print first 7 fields as-is: zone TTL IN DNSKEY flags protocol algorithm
+        for (i=1; i<=7; i++) {
+            printf "%s", $i
+            if (i < 7) printf " "
+        }
+        printf " "
+        # Concatenate all remaining fields (the base64 key) without spaces
+        for (i=8; i<=NF; i++) printf "%s", $i
+        printf "\n"
+    }'
+}
+
+check_dnskey_published() {
+    local zone="$1"
+    local key_tag="$2"
+    local dns_server="${3:-$DNS_SERVER}"
+
+    log_debug "================================================"
+    log_debug "DNS Check: Looking for DNSKEY $key_tag in $zone"
+    log_debug "DNS Server: $dns_server"
+
+    # Show copy-pastable command
+    if [[ "$DEBUG" == "true" ]]; then
+        echo "" >&2
+        echo "# Copy-paste this command to test manually:" >&2
+        echo "$ dig @$dns_server $zone DNSKEY +noall +answer" >&2
+        echo "" >&2
+    fi
+
+    log_debug "================================================"
+
+    # Query DNSKEY records - use +noall +answer to get clean output
+    local dig_output
+    if ! dig_output=$(dig @"$dns_server" "$zone" DNSKEY +noall +answer 2>&1); then
+        log_debug "ERROR: dig command failed"
+        log_debug "$dig_output"
+        return 1
+    fi
+
+    if [[ -z "$dig_output" ]]; then
+        log_debug "ERROR: No output from dig"
+        return 1
+    fi
+
+    log_debug "Dig output (first 10 lines):"
+    echo "$dig_output" | head -10 | while IFS= read -r line; do
+        log_debug "  $line"
+    done
+
+    # Filter only DNSKEY lines (not RRSIG)
+    local dnskey_lines
+    dnskey_lines=$(echo "$dig_output" | grep "IN[[:space:]]*DNSKEY" | grep -v "RRSIG")
+
+    if [[ -z "$dnskey_lines" ]]; then
+        log_debug "ERROR: No DNSKEY records found after filtering"
+        return 1
+    fi
+
+    log_debug "Filtered DNSKEY records:"
+    echo "$dnskey_lines" | while IFS= read -r line; do
+        log_debug "  $line"
+    done
+
+    # Create temp file with zone file format
+    local temp_file
+    temp_file=$(mktemp)
+    echo "$dnskey_lines" > "$temp_file"
+
+    log_debug "Temp file content:"
+    if [[ "$DEBUG" == "true" ]]; then
+        cat "$temp_file" >&2
+    fi
+
+    # Calculate DS records from DNSKEYs
+    if [[ "$DEBUG" == "true" ]]; then
+        echo "" >&2
+        echo "# Copy-paste this command to calculate DS records:" >&2
+        echo "$ dnssec-dsfromkey -f $temp_file $zone" >&2
+        echo "" >&2
+    fi
+
+    local ds_output
+    if ! ds_output=$(dnssec-dsfromkey -f "$temp_file" "$zone" 2>&1); then
+        log_debug "ERROR: dnssec-dsfromkey failed"
+        log_debug "$ds_output"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    rm -f "$temp_file"
+
+    log_debug "DS records calculated:"
+    echo "$ds_output" | while IFS= read -r line; do
+        log_debug "  $line"
+    done
+
+    # Extract all key tags from DS output
+    # DS format: zone IN DS key-tag algo digest-type digest
+    # Spalte 4 ist der key-tag!
+    local found_tags
+    found_tags=$(echo "$ds_output" | grep "IN DS" | awk '{print $4}')
+
+    log_debug "Found key tags: $found_tags"
+
+    # Check if our key tag is in the list
+    if echo "$found_tags" | grep -q "^${key_tag}$"; then
+        log_debug "✓ SUCCESS: DNSKEY $key_tag FOUND in DNS"
+        return 0
+    fi
+
+    log_debug "✗ FAILURE: DNSKEY $key_tag NOT FOUND in DNS"
+    log_debug "Expected: $key_tag"
+    log_debug "Found: $found_tags"
+    return 1
+}
+
+check_ds_at_parent() {
+    local zone="$1"
+    local key_tag="$2"
+
+    log_debug "Checking if DS record for key $key_tag is at parent nameserver"
+
+    # Extract parent zone (e.g., domain.tld -> tld)
+    local parent_zone
+    parent_zone=$(echo "$zone" | awk -F. '{print $(NF-1)"."$NF}')
+
+    if [[ "$zone" == "$parent_zone" ]]; then
+        # TLD zone - check at root
+        parent_zone="."
+    fi
+
+    log_debug "Parent zone: $parent_zone"
+
+    # Query DS record from recursive resolver
+    local ds_output
+    if ! ds_output=$(dig @1.1.1.1 "$zone" DS +short 2>/dev/null); then
+        log_debug "Failed to query DS record"
+        return 1
+    fi
+
+    if [[ -z "$ds_output" ]]; then
+        log_debug "No DS records found at parent"
+        return 1
+    fi
+
+    log_debug "DS records found:"
+    echo "$ds_output" | while IFS= read -r line; do
+        log_debug "  $line"
+    done
+
+    # Check if our key tag is in the DS records
+    # DS format: key-tag algo digest-type digest
+    if echo "$ds_output" | awk '{print $1}' | grep -q "^${key_tag}$"; then
+        log_debug "✓ DS record for key $key_tag found at parent"
+        return 0
+    fi
+
+    log_debug "✗ DS record for key $key_tag NOT found at parent"
+    return 1
+}
+
+get_zone_file_path() {
+    local zone="$1"
+
+    log_debug "Looking for zone file path for: $zone"
+
+    # Parse BIND configuration to find zone file
+    # Search in main config and included files
+    local zone_file=""
+    local inline_signing="no"
+
+    # Function to search zone config recursively
+    search_zone_config() {
+        local config_file="$1"
+        local search_zone="$2"
+
+        if [[ ! -f "$config_file" ]]; then
+            return 1
+        fi
+
+        # Remove comments and search for zone block
+        local in_zone_block=false
+        local current_zone=""
+
+        while IFS= read -r line; do
+            # Remove leading/trailing whitespace
+            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+            # Remove comments
+            line=$(echo "$line" | sed 's/#.*//' | sed 's/\/\/.*//')
+
+            # Check for zone declaration
+            if [[ "$line" =~ ^zone[[:space:]]+\"([^\"]+)\" ]]; then
+                current_zone="${BASH_REMATCH[1]}"
+                if [[ "$current_zone" == "$search_zone" ]]; then
+                    in_zone_block=true
+                    log_debug "Found zone block for: $current_zone"
+                fi
+            fi
+
+            # If we're in the right zone block, look for file and inline-signing
+            if [[ "$in_zone_block" == true ]]; then
+                # Look for file directive
+                if [[ "$line" =~ file[[:space:]]+\"([^\"]+)\" ]]; then
+                    zone_file="${BASH_REMATCH[1]}"
+                    log_debug "Found zone file: $zone_file"
+                fi
+
+                # Look for inline-signing directive
+                if [[ "$line" =~ inline-signing[[:space:]]+(yes|no) ]]; then
+                    inline_signing="${BASH_REMATCH[1]}"
+                    log_debug "Found inline-signing: $inline_signing"
+                fi
+
+                # End of zone block (match only lines that are just "};")
+                if [[ "$line" =~ ^\}\;$ ]]; then
+                    break
+                fi
+            fi
+
+            # Check for include directives
+            if [[ "$line" =~ ^include[[:space:]]+\"([^\"]+)\" ]]; then
+                local include_file="${BASH_REMATCH[1]}"
+                # Make path absolute if relative
+                if [[ "$include_file" != /* ]]; then
+                    local base_dir=$(dirname "$config_file")
+                    include_file="$base_dir/$include_file"
+                fi
+                search_zone_config "$include_file" "$search_zone"
+            fi
+        done < "$config_file"
+    }
+
+    # Start search from main config file
+    search_zone_config "$BIND_CONF_FILE" "$zone"
+
+    if [[ -z "$zone_file" ]]; then
+        log_debug "Could not find zone file in BIND config"
+        return 1
+    fi
+
+    # Make path absolute if relative
+    if [[ "$zone_file" != /* ]]; then
+        zone_file="$BIND_CONFIG_DIR/$zone_file"
+    fi
+
+    log_debug "Zone file (unsigned): $zone_file"
+    log_debug "Inline-signing: $inline_signing"
+
+    # If inline-signing is enabled, BIND uses .signed version
+    if [[ "$inline_signing" == "yes" ]]; then
+        zone_file="${zone_file}.signed"
+        log_debug "Using signed zone file: $zone_file"
+    fi
+
+    # Check if file exists
+    if [[ ! -f "$zone_file" ]]; then
+        log_debug "Zone file does not exist: $zone_file"
+        return 1
+    fi
+
+    echo "$zone_file"
+    return 0
+}
+
+cleanup_orphaned_keys() {
+    local zone="$1"
+
+    log_debug "Checking for orphaned keys in zone: $zone"
+
+    # Determine log source - check if BIND_LOGFILE is configured
+    local log_source=""
+    if [[ -n "$BIND_LOGFILE" && -f "$BIND_LOGFILE" ]]; then
+        log_source="file"
+        log_debug "Using BIND log file: $BIND_LOGFILE"
+    elif command -v journalctl &>/dev/null; then
+        log_source="journalctl"
+        log_debug "Using journalctl for BIND logs"
+    else
+        log_debug "No log source available, skipping orphaned key check"
+        return 0
+    fi
+
+    # Extract orphaned key tags from logs
+    # IMPORTANT: Only search since last BIND start to avoid false positives
+    # from errors that occurred before BIND was restarted/fixed
+    local orphaned_keys
+    if [[ "$log_source" == "journalctl" ]]; then
+        # Find last BIND start time
+        local last_start_time
+        last_start_time=$(journalctl -u named --since "7 days ago" 2>/dev/null | \
+                         grep -E "starting BIND|named.*starting|all zones loaded" | \
+                         tail -1 | \
+                         awk '{print $1, $2, $3}')
+
+        if [[ -n "$last_start_time" ]]; then
+            log_debug "Last BIND start detected at: $last_start_time"
+            log_debug "Searching for orphaned keys since last BIND start"
+
+            # Search only since last BIND start
+            orphaned_keys=$(journalctl -u named --since "$last_start_time" 2>/dev/null | \
+                           grep "error reading.*${zone/./\\.}" | \
+                           grep "file not found" | \
+                           grep -oP 'K[^+]+\+\d+\+(\d+)\.private' | \
+                           grep -oP '\+(\d+)\.private' | \
+                           sed 's/+//g; s/\.private//g' | \
+                           sort -u)
+        else
+            log_debug "Could not detect last BIND start, using 1 hour window as fallback"
+
+            # Fallback to 1 hour window if BIND start not found
+            orphaned_keys=$(journalctl -u named --since "1 hour ago" 2>/dev/null | \
+                           grep "error reading.*${zone/./\\.}" | \
+                           grep "file not found" | \
+                           grep -oP 'K[^+]+\+\d+\+(\d+)\.private' | \
+                           grep -oP '\+(\d+)\.private' | \
+                           sed 's/+//g; s/\.private//g' | \
+                           sort -u)
+        fi
+    else
+        # Parse from BIND log file - find last BIND start marker
+        local start_line_number
+        start_line_number=$(grep -n -E "starting BIND|named.*starting|all zones loaded" "$BIND_LOGFILE" 2>/dev/null | \
+                           tail -1 | \
+                           cut -d: -f1)
+
+        if [[ -n "$start_line_number" ]]; then
+            log_debug "Last BIND start found at line $start_line_number in log file"
+            log_debug "Searching for orphaned keys since last BIND start"
+
+            # Get total lines in log file
+            local total_lines
+            total_lines=$(wc -l < "$BIND_LOGFILE" 2>/dev/null)
+
+            # Calculate how many lines to read (from start_line to end)
+            local lines_to_read=$((total_lines - start_line_number + 1))
+
+            # Read only from last BIND start onwards
+            orphaned_keys=$(tail -n "$lines_to_read" "$BIND_LOGFILE" 2>/dev/null | \
+                           grep "error reading.*${zone/./\\.}" | \
+                           grep "file not found" | \
+                           grep -oP 'K[^+]+\+\d+\+(\d+)\.private' | \
+                           grep -oP '\+(\d+)\.private' | \
+                           sed 's/+//g; s/\.private//g' | \
+                           sort -u)
+        else
+            log_debug "Could not detect last BIND start in log file, using last 5000 lines as fallback"
+
+            # Fallback to last 5000 lines if BIND start marker not found
+            orphaned_keys=$(tail -n 5000 "$BIND_LOGFILE" 2>/dev/null | \
+                           grep "error reading.*${zone/./\\.}" | \
+                           grep "file not found" | \
+                           grep -oP 'K[^+]+\+\d+\+(\d+)\.private' | \
+                           grep -oP '\+(\d+)\.private' | \
+                           sed 's/+//g; s/\.private//g' | \
+                           sort -u)
+        fi
+    fi
+
+    if [[ -z "$orphaned_keys" ]]; then
+        log_debug "No orphaned keys found for $zone"
+        return 0
+    fi
+
+    local orphan_list=$(echo "$orphaned_keys" | tr '\n' ', ' | sed 's/, $//')
+    log_debug "Found orphaned key tags for $zone: $orphan_list"
+
+    # Count orphaned keys
+    local orphan_count
+    orphan_count=$(echo "$orphaned_keys" | wc -l)
+
+    if [[ "$DEBUG" == "true" ]]; then
+        echo "" >&2
+        echo "# Orphaned keys detected for $zone:" >&2
+        echo "$orphaned_keys" | while read -r key_tag; do
+            echo "#   Key $key_tag - private file missing" >&2
+        done
+        echo "" >&2
+        echo "# Copy-paste these commands to clean up manually:" >&2
+        echo "$ rndc freeze $zone" >&2
+        echo "$ rndc sync -clean $zone" >&2
+        echo "$ rndc reload $zone" >&2
+        echo "$ rndc thaw $zone" >&2
+        echo "$ rndc loadkeys $zone" >&2
+        echo "$ rndc sign $zone" >&2
+        echo "" >&2
+    fi
+
+    log_debug "Cleaning up orphaned keys with nuclear method..."
+
+    # Find the actual zone file (handles inline-signing)
+    local zone_file
+    if zone_file=$(get_zone_file_path "$zone"); then
+        log_debug "Zone file: $zone_file"
+
+        # Remove .signed suffix if present (get_zone_file_path may return .signed for inline-signing)
+        local unsigned_zone_file="${zone_file%.signed}"
+        log_debug "Unsigned zone file: $unsigned_zone_file"
+
+        if [[ "$unsigned_zone_file" != "$zone_file" ]]; then
+            log_debug "Zone uses inline-signing (BIND manages .signed file)"
+        fi
+    else
+        log_debug "Could not determine zone file path from BIND config"
+        log_debug "Skipping nuclear cleanup (zone file not accessible)"
+        # Don't fail - just skip nuclear cleanup
+        return 0
+    fi
+
+    if [[ "$DEBUG" == "true" ]]; then
+        echo "" >&2
+        echo "# Cleanup strategy (NUCLEAR METHOD):" >&2
+        echo "# This method forces BIND to regenerate the signed zone from scratch" >&2
+        echo "# 1. Freeze zone (stop updates)" >&2
+        echo "# 2. Delete .signed zone file and journal" >&2
+        echo "#    Files: ${unsigned_zone_file}.signed, ${unsigned_zone_file}.signed.jnl" >&2
+        echo "# 3. Reload zone (BIND regenerates .signed with only current keys)" >&2
+        echo "# 4. Thaw zone (resume updates)" >&2
+        echo "" >&2
+    fi
+
+    # Step 1: Freeze the zone (stop dynamic updates)
+    log_debug "Step 1: Freezing zone..."
+    log_debug "Executing: rndc freeze $zone"
+    if rndc freeze "$zone" >/dev/null 2>&1; then
+        log_debug "  Zone frozen successfully"
+    else
+        log_debug "  Zone already frozen or freeze not needed"
+    fi
+
+    # Step 2: Delete signed zone file and journal (Nuclear Option)
+    log_debug "Step 2: Deleting signed zone and journal..."
+    log_debug "Executing: rm -f ${unsigned_zone_file}.signed ${unsigned_zone_file}.signed.jnl"
+    if rm -f "${unsigned_zone_file}.signed" "${unsigned_zone_file}.signed.jnl"; then
+        log_debug "  Signed zone and journal deleted"
+    else
+        log_debug "  Warning: Could not delete signed zone files"
+    fi
+
+    # Step 3: Reload zone (BIND will regenerate .signed with current keys only)
+    log_debug "Step 3: Reloading zone from source file..."
+    log_debug "Executing: rndc reload $zone"
+    if rndc reload "$zone" >/dev/null 2>&1; then
+        log_debug "  Zone reloaded successfully (BIND regenerating signed version)"
+    else
+        log_debug "  Warning: Zone reload reported an issue"
+    fi
+
+    # Step 4: Thaw the zone (resume dynamic updates)
+    log_debug "Step 4: Thawing zone..."
+    log_debug "Executing: rndc thaw $zone"
+    if rndc thaw "$zone" >/dev/null 2>&1; then
+        log_debug "  Zone thawed successfully"
+    else
+        log_debug "  Zone already thawed or thaw not needed"
+    fi
+
+    # Give BIND time to regenerate the signed zone
+    log_debug "Waiting for BIND to regenerate signed zone..."
+    sleep 5
+
+    # Verify cleanup by checking logs again
+    local remaining_orphans
+    if [[ "$log_source" == "journalctl" ]]; then
+        remaining_orphans=$(journalctl -u named --since "10 seconds ago" 2>/dev/null | \
+                           grep "error reading.*${zone/./\\.}" | \
+                           grep "file not found" | \
+                           wc -l)
+    else
+        # Check last 100 lines of log file for very recent errors
+        remaining_orphans=$(tail -n 100 "$BIND_LOGFILE" 2>/dev/null | \
+                           grep "error reading.*${zone/./\\.}" | \
+                           grep "file not found" | \
+                           wc -l)
+    fi
+
+    if [[ $remaining_orphans -eq 0 ]]; then
+        # Success - output in requested format
+        if [[ -t 1 ]]; then
+            echo -e "[${COLOR_GREEN}✓${COLOR_RESET}] $zone - Found $orphan_count orphaned key(s) ($orphan_list). Cleaned up." >&2
+        else
+            echo "[✓] $zone - Found $orphan_count orphaned key(s) ($orphan_list). Cleaned up." >&2
+        fi
+    else
+        log_debug "Warning: Some orphaned keys may still remain (check BIND logs)"
+        if [[ -t 1 ]]; then
+            echo -e "[${COLOR_YELLOW}!${COLOR_RESET}] $zone - Found $orphan_count orphaned key(s) ($orphan_list). Cleanup attempted." >&2
+        else
+            echo "[!] $zone - Found $orphan_count orphaned key(s) ($orphan_list). Cleanup attempted." >&2
+        fi
+    fi
+
+    return 0
+}
+
+determine_rollover_phase() {
+    local zone="$1"
+    local new_key_tag="$2"
+    local dns_server="${3:-$DNS_SERVER}"
+    local days_since_creation="$4"
+
+    # Phase 2: DNSKEY Propagated (check if 2+ days old)
+    local phase2=false
+    if [[ $days_since_creation -ge 2 ]]; then
+        phase2=true
+    fi
+
+    # Phase 3: DS Updated at Registrar (check parent nameserver)
+    local phase3=false
+    if check_ds_at_parent "$zone" "$new_key_tag"; then
+        phase3=true
+    fi
+
+    # Phase 4: DS Propagated (check BIND status)
+    local phase4=false
+    local bind_status
+    bind_status=$(rndc dnssec -status "$zone" 2>/dev/null | grep -A 10 "key: $new_key_tag" | grep "  - ds:" | awk '{print $3}' | head -1)
+    if [[ "$bind_status" == "omnipresent" ]]; then
+        phase4=true
+    fi
+
+    # Return current phase (highest completed phase)
+    if [[ "$phase4" == true ]]; then
+        echo "5"  # Phase 4 complete, moving to Phase 5
+    elif [[ "$phase3" == true ]]; then
+        echo "4"  # Phase 3 complete, in Phase 4
+    elif [[ "$phase2" == true ]]; then
+        echo "3"  # Phase 2 complete, in Phase 3
+    else
+        echo "2"  # Phase 1 complete, in Phase 2
+    fi
+}
+
+# ============================================================================
+# Email Generation
+# ============================================================================
+
+generate_rollover_email() {
+    local zone="$1"
+    local new_key_tag="$2"
+    local old_key_tag="$3"
+    local new_keyfile="$4"
+    local old_keyfile="$5"
+    local status="$6"
+    local dns_publication_info="$7"  # New parameter: DNS publication status
+
+    log_debug "Generating rollover email for $zone"
+
+    # Extract next key event timestamp
+    local next_check
+    next_check=$(extract_rollover_date "$status" "$new_key_tag")
+
+    # Extract key creation date and calculate days
+    local key_created
+    key_created=$(extract_key_creation_date "$new_keyfile")
+
+    local days_since_creation
+    days_since_creation=$(calculate_days_since_creation "$new_keyfile")
+
+    # Determine current rollover phase
+    local current_phase
+    current_phase=$(determine_rollover_phase "$zone" "$new_key_tag" "$DNS_SERVER" "$days_since_creation")
+
+    # Determine if ready to publish DS (typically needs 2 days for DNSKEY propagation)
+    local ds_status
+    local required_days=2
+    if [[ $days_since_creation -ge $required_days ]]; then
+        ds_status="✅ READY TO PUBLISH"
+    else
+        local remaining_days=$((required_days - days_since_creation))
+        ds_status="⏳ WAIT ($remaining_days day(s) remaining)"
+    fi
+
+    # Extract new key info
+    local new_flags new_algo new_pubkey
+    if [[ -f "$new_keyfile" ]]; then
+        new_flags=$(grep "DNSKEY" "$new_keyfile" | awk '{print $5}')
+        new_algo=$(grep "DNSKEY" "$new_keyfile" | awk '{print $7}')
+        new_pubkey=$(grep "DNSKEY" "$new_keyfile" | awk '{for(i=8;i<=NF;i++) printf $i""; print ""}')
+    fi
+
+    # Extract old key info (if exists)
+    local old_flags old_algo
+    if [[ -f "$old_keyfile" ]]; then
+        old_flags=$(grep "DNSKEY" "$old_keyfile" | awk '{print $5}')
+        old_algo=$(grep "DNSKEY" "$old_keyfile" | awk '{print $7}')
+    fi
+
+    # Get DS records for both keys
+    local new_ds_record="" old_ds_record=""
+    if [[ -f "$new_keyfile" ]]; then
+        new_ds_record=$(dnssec-dsfromkey -2 "$new_keyfile" 2>/dev/null)
+    fi
+    if [[ -f "$old_keyfile" ]]; then
+        old_ds_record=$(dnssec-dsfromkey -2 "$old_keyfile" 2>/dev/null)
+    fi
+
+    # Get DNSKEY records for both keys
+    local new_dnskey_record="" old_dnskey_record=""
+    if [[ -f "$new_keyfile" ]]; then
+        new_dnskey_record=$(grep "^${zone}\." "$new_keyfile" | grep "IN DNSKEY" | normalize_dnskey_record)
+    fi
+    if [[ -f "$old_keyfile" ]]; then
+        old_dnskey_record=$(grep "^${zone}\." "$old_keyfile" | grep "IN DNSKEY" | normalize_dnskey_record)
+    fi
+
+    # Determine phase description for subject
+    local phase_desc
+    case $current_phase in
+        1)
+            phase_desc="1/5: DNSKEY Generation (complete)"
+            ;;
+        2)
+            phase_desc="2/5: DNSKEY Propagation (in progress)"
+            ;;
+        3)
+            phase_desc="3/5: DS-Record Update (action required)"
+            ;;
+        4)
+            phase_desc="4/5: DS Propagation (in progress)"
+            ;;
+        5)
+            phase_desc="5/5: Old Key Removal (pending)"
+            ;;
+        *)
+            phase_desc="Unknown phase"
+            ;;
+    esac
+
+    # Email subject with phase information
+    echo "SUBJECT: [$zone] KSK rollover - $phase_desc"
+    echo ""
+
+    # Determine email title based on whether this is first key or rollover
+    local email_title email_description
+    if [[ -z "$old_key_tag" ]]; then
+        email_title="FIRST DNSSEC KEY SETUP"
+        email_description="BIND9 has created the first DNSSEC key for domain: $zone"
+    else
+        email_title="DNSSEC KEY ROLLOVER DETECTED"
+        email_description="BIND9 has initiated a DNSSEC key rollover for domain: $zone"
+    fi
+
+    cat <<EOF
+
+═══════════════════════════════════════════════════════════════
+  $email_title: $zone
+═══════════════════════════════════════════════════════════════
+
+$email_description
+
+Next BIND Check: $next_check
+(This is when BIND will next evaluate key state transitions -
+ NOT the rollover completion time. The rollover process typically
+ takes 5-10 days depending on DS TTL and manual DS updates.)
+
+═══════════════════════════════════════════════════════════════
+  📊 ROLLOVER STATUS - YOU ARE AT PHASE $current_phase
+═══════════════════════════════════════════════════════════════
+
+Phase 1: DNSKEY Generation $(if [[ $current_phase -ge 1 ]]; then echo "✅ COMPLETE"; else echo "⏳ PENDING"; fi)
+  ├─ BIND generates new KSK
+  ├─ DNSKEY published in DNS
+  └─ Status: ds = rumoured
+
+Phase 2: DNSKEY Propagation (2 days) $(if [[ $current_phase -ge 2 ]]; then echo "✅ COMPLETE"; else echo "⏳ PENDING"; fi)
+  ├─ DNSKEY propagates worldwide
+  ├─ Resolvers cache the new key
+  └─ Days since creation: $days_since_creation
+
+Phase 3: DS-Record Update (MANUAL) $(if [[ $current_phase -ge 3 ]]; then echo "✅ COMPLETE"; else echo "⚠️  ACTION REQUIRED"; fi)
+  ├─ Login at Netcup $(if [[ $current_phase -ge 3 ]]; then echo "✅"; else echo "← YOU ARE HERE"; fi)
+  ├─ Add DS record for key $new_key_tag
+  └─ Remove old DS record$(if [[ -n "$old_key_tag" ]]; then echo " ($old_key_tag)"; fi)
+
+Phase 4: DS Propagation (2-4 days) $(if [[ $current_phase -ge 4 ]]; then echo "✅ COMPLETE"; else echo "⏳ WAITING"; fi)
+  ├─ Parent zone (.eu) propagates DS
+  ├─ Run: rndc dnssec -checkds -key $new_key_tag published $zone
+  └─ Status changes to: ds = omnipresent
+
+Phase 5: Old Key Removal (automatic) $(if [[ $current_phase -ge 5 ]]; then echo "✅ COMPLETE"; else echo "⏳ WAITING"; fi)
+  ├─ BIND removes old key
+  └─ Rollover complete
+
+$(if [[ $current_phase -eq 2 ]]; then
+    echo "⚠️  NEXT STEP: Wait $((required_days - days_since_creation)) more day(s), then update DS at Netcup"
+elif [[ $current_phase -eq 3 ]]; then
+    echo "⚠️  NEXT STEP: Login at Netcup and add DS record for key $new_key_tag"
+elif [[ $current_phase -eq 4 ]]; then
+    echo "✅ DS record found at parent! Run: $ rndc dnssec -checkds -key $new_key_tag published $zone"
+elif [[ $current_phase -ge 5 ]]; then
+    echo "✅ Rollover process is progressing as expected!"
+fi)
+
+EOF
+
+    cat <<EOF
+📝 ACTION REQUIRED: Update keys at your domain registrar
+
+═══════════════════════════════════════════════════════════════
+  ✅ NEW KEY - ADD TO REGISTRAR
+═══════════════════════════════════════════════════════════════
+
+Key Tag:       $new_key_tag
+Flags:         $new_flags (KSK - Key Signing Key)
+Algorithm:     $new_algo (ECDSAP256SHA256)
+Public Key:    $new_pubkey
+
+DS Record:
+  ${new_ds_record}
+
+DNSKEY Record:
+  ${new_dnskey_record}
+
+$dns_publication_info
+
+EOF
+
+    # Only show old key section if there is an old key (rollover case)
+    if [[ -n "$old_key_tag" ]]; then
+        cat <<EOF
+═══════════════════════════════════════════════════════════════
+  ❌ OLD KEY - REMOVE FROM REGISTRAR
+═══════════════════════════════════════════════════════════════
+
+Key Tag:       $old_key_tag
+$(if [[ -n "$old_flags" ]]; then echo "Flags:         $old_flags"; fi)
+$(if [[ -n "$old_algo" ]]; then echo "Algorithm:     $old_algo"; fi)
+
+DS Record:
+  ${old_ds_record}
+
+DNSKEY Record:
+  ${old_dnskey_record}
+
+EOF
+    fi
+
+    cat <<EOF
+
+═══════════════════════════════════════════════════════════════
+  ROLLOVER PROCESS FOR KEY $new_key_tag
+═══════════════════════════════════════════════════════════════
+
+1. ✅ New KSK generated and published in DNS
+   Created: $key_created
+   Status: COMPLETED
+
+2. $(if [[ $days_since_creation -ge $required_days ]]; then echo "✅"; else echo "⏳"; fi) Wait for DNSKEY propagation (~$required_days days)
+   Days since creation: $days_since_creation day(s)
+   Status: $(if [[ $days_since_creation -ge $required_days ]]; then echo "COMPLETED"; else echo "IN PROGRESS"; fi)
+
+3. $ds_status Submit new DS record to registrar
+   $(if [[ $days_since_creation -ge $required_days ]]; then echo "Action: UPDATE DS AT NETCUP NOW"; else echo "Action: WAIT FOR PROPAGATION"; fi)
+
+4. ⏳ Wait for DS propagation (~2-4 days)
+   Status: Pending DS submission
+
+5. ⏳ Old key automatically retired by BIND
+   Status: Pending DS propagation
+
+Expected completion: $(date -d "+$((7 - days_since_creation)) days" '+%d.%m.%Y' 2>/dev/null || echo "~7 days from detection")
+
+═══════════════════════════════════════════════════════════════
+  🔧 bash snippets
+═══════════════════════════════════════════════════════════════
+
+Monitor rollover progress:
+  $ rndc dnssec -status $zone
+
+After submitting DS record at registrar, notify BIND:
+  $ rndc dnssec -checkds -key $new_key_tag published $zone
+
+After DS propagation is complete, notify BIND:
+  $ rndc dnssec -checkds -key $(if [[ -n "$old_key_tag" ]]; then echo "$old_key_tag"; else echo "OLD_KEY_TAG"; fi) withdrawn $zone
+
+═══════════════════════════════════════════════════════════════
+
+Generated by: $SCRIPT_NAME v$VERSION
+Timestamp: $(date '+%Y-%m-%d %H:%M:%S')
+Host: $(hostname)
+
+═══════════════════════════════════════════════════════════════
+
+EOF
+}
+
+# ============================================================================
+# Validation Display
+# ============================================================================
+
+print_keys() {
+    local zone="$1"
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}  DNSSEC KEYS FOR: ${COLOR_YELLOW}${zone}${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  DNSSEC KEYS FOR: ${zone}"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+
+    # Find all key files for this zone
+    checkbox_pending "Searching for key files..."
+    local key_files
+    key_files=$(find "$KEYS_DIR" -type f -name "K${zone}.+*.key" 2>/dev/null | sort)
+
+    if [[ -z "$key_files" ]]; then
+        checkbox_fail "No key files found for $zone"
+        log_error "No key files found in $KEYS_DIR for zone $zone"
+        return 1
+    fi
+
+    local key_count
+    key_count=$(echo "$key_files" | wc -l)
+    checkbox_done "Found $key_count key file(s)"
+
+    echo ""
+
+    # Process each key file
+    local key_num=1
+    while IFS= read -r key_file; do
+        if [[ -z "$key_file" ]]; then
+            continue
+        fi
+
+        # Extract key tag from filename (preserve leading zeros for display)
+        local key_tag key_tag_numeric
+        key_tag=$(basename "$key_file" | grep -oP '\+\K[0-9]+(?=\.key$)')
+        # Also get numeric version (without leading zeros) for rndc comparison
+        key_tag_numeric=$((10#$key_tag))
+
+        # Get key type from rndc status
+        local status
+        status=$(rndc dnssec -status "$zone" 2>&1)
+        local key_type
+        # Try matching with both formats (with and without leading zeros)
+        key_type=$(echo "$status" | grep -E "^key: (0*${key_tag_numeric}|${key_tag})( |,)" | awk -F'[,)]' '{print $NF}' | xargs | head -1)
+
+        if [[ -z "$key_type" ]]; then
+            key_type="UNKNOWN"
+        fi
+
+        if [[ -t 1 ]]; then
+            echo -e "${COLOR_BOLD}─────────────────────────────────────────────────────────────────${COLOR_RESET}"
+            echo -e "${COLOR_BOLD}Key #$key_num: Tag ${COLOR_YELLOW}${key_tag}${COLOR_RESET} ${COLOR_BOLD}(${key_type})${COLOR_RESET}"
+            echo -e "${COLOR_BOLD}─────────────────────────────────────────────────────────────────${COLOR_RESET}"
+        else
+            echo "─────────────────────────────────────────────────────────────────"
+            echo "Key #$key_num: Tag ${key_tag} (${key_type})"
+            echo "─────────────────────────────────────────────────────────────────"
+        fi
+        echo ""
+
+        # Generate DS records
+        checkbox_pending "Generating DS records for key $key_tag..."
+        local ds_output
+        if ds_output=$(dnssec-dsfromkey -2 "$key_file" 2>&1); then
+            checkbox_done "DS records generated"
+            echo ""
+            if [[ -t 1 ]]; then
+                echo -e "${COLOR_GREEN}DS Record (SHA-256):${COLOR_RESET}"
+            else
+                echo "DS Record (SHA-256):"
+            fi
+            echo "$ds_output" | sed 's/^/  /'
+        else
+            checkbox_fail "Failed to generate DS records"
+            log_error "dnssec-dsfromkey failed for $key_file: $ds_output"
+        fi
+
+        echo ""
+
+        # Show DNSKEY record
+        checkbox_pending "Reading DNSKEY record for key $key_tag..."
+        if [[ -f "$key_file" ]]; then
+            checkbox_done "DNSKEY record found"
+            echo ""
+            if [[ -t 1 ]]; then
+                echo -e "${COLOR_GREEN}DNSKEY Record:${COLOR_RESET}"
+            else
+                echo "DNSKEY Record:"
+            fi
+            grep "IN DNSKEY" "$key_file" | normalize_dnskey_record | sed 's/^/  /'
+        else
+            checkbox_fail "Key file not readable"
+        fi
+
+        echo ""
+
+        # Show key states from BIND
+        if [[ "$key_type" != "UNKNOWN" ]]; then
+            checkbox_pending "Reading key states from BIND..."
+            local key_states
+            # Use numeric key tag to match both "9442" and "09442" in rndc output
+            key_states=$(echo "$status" | sed -n "/^key: 0*${key_tag_numeric}/,/^$/p" | grep -E "published:|key signing:|zone signing:|goal:|dnskey:|ds:")
+
+            if [[ -n "$key_states" ]]; then
+                checkbox_done "Key states retrieved"
+                echo ""
+                if [[ -t 1 ]]; then
+                    echo -e "${COLOR_CYAN}Key States (BIND):${COLOR_RESET}"
+                else
+                    echo "Key States (BIND):"
+                fi
+                echo "$key_states" | sed 's/^/  /'
+            fi
+        fi
+
+        echo ""
+
+        ((key_num++))
+    done <<< "$key_files"
+
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}  SUMMARY${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  SUMMARY"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "Total keys for $zone: $key_count"
+    echo "Key directory: $KEYS_DIR"
+    echo ""
+    echo "To update registrar DS records:"
+    echo "  1. Copy the DS record(s) above"
+    echo "  2. Login to your registrar (e.g., Netcup)"
+    echo "  3. Update DNSSEC settings with the DS record"
+    echo "  4. After propagation, notify BIND:"
+    echo "     $ rndc dnssec -checkds -key <KEY_TAG> published $zone"
+    echo ""
+
+    return 0
+}
+
+initiate_rollover() {
+    local zone="$1"
+    local status="$2"
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}  INITIATE DNSSEC ROLLOVER FOR: ${COLOR_YELLOW}$zone${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  INITIATE DNSSEC ROLLOVER FOR: $zone"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+
+    checkbox_pending "Analyzing current key status..."
+
+    # Find current KSK/CSK key
+    local current_key_tag="" current_key_type=""
+    local key_signing zone_signing published zone_signing_time
+
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+            local key_tag key_type
+            key_tag=$(echo "$line" | awk '{print $2}')
+            key_type=$(echo "$line" | awk -F'[,)]' '{print $NF}' | xargs)
+
+            # Get key states
+            published=$(echo "$status" | grep -A 3 "key: $key_tag" | grep "published:" | awk '{print $2}')
+            key_signing=$(echo "$status" | grep -A 4 "key: $key_tag" | grep "key signing:" | awk '{print $3}')
+
+            # Find active KSK/CSK (trust BIND's states, not timestamps!)
+            # If BIND says published=yes AND key signing=yes, the key is a candidate
+            if [[ "$published" == "yes" ]] && [[ "$key_signing" == "yes" ]]; then
+                current_key_tag="$key_tag"
+                current_key_type="$key_type"
+                break
+            fi
+        fi
+    done < <(echo "$status" | grep '^key:')
+
+    if [[ -z "$current_key_tag" ]]; then
+        checkbox_fail "No active KSK/CSK key found"
+        log_error "Cannot initiate rollover: No key with published=yes and key signing=yes found"
+        return 1
+    fi
+
+    checkbox_done "Found active key: $current_key_tag ($current_key_type)"
+    log_info "Current active key: $current_key_tag ($current_key_type)"
+    echo ""
+
+    # Ask for confirmation
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_YELLOW}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  CONFIRMATION REQUIRED${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  CONFIRMATION REQUIRED"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "This will initiate a KSK rollover for: $zone"
+    echo "Current key: $current_key_tag"
+    echo ""
+    echo "BIND will:"
+    echo "  1. Generate a new KSK key"
+    echo "  2. Publish new key in DNS"
+    echo "  3. Wait for you to update registrar"
+    echo "  4. Complete rollover after registrar update"
+    echo ""
+
+    read -r -p "Are you sure you want to initiate rollover for $zone? (yes/no): " confirm < /dev/tty
+
+    if [[ "$confirm" != "yes" ]]; then
+        checkbox_fail "Rollover initiation cancelled by user"
+        return 1
+    fi
+
+    echo ""
+    checkbox_pending "Initiating rollover..."
+
+    # Execute rndc dnssec -rollover - let BIND decide if it's ready!
+    local rndc_output
+    if rndc_output=$(rndc dnssec -rollover -key "$current_key_tag" "$zone" 2>&1); then
+        checkbox_done "Rollover initiated successfully"
+        if [[ -n "$rndc_output" ]]; then
+            echo "$rndc_output" | sed 's/^/         /'
+        fi
+    else
+        # BIND said NO - trust BIND's judgment!
+        checkbox_fail "BIND rejected rollover initiation"
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  ⚠️  BIND CANNOT START ROLLOVER YET"
+        echo "═══════════════════════════════════════════════════════════════"
+        echo ""
+        echo "BIND's response:"
+        echo "  → $rndc_output"
+        echo ""
+
+        # Check if --force was used
+        if [[ "$FORCE_INITIATE" == true ]]; then
+            # Force mode: Try to override BIND's restrictions
+            checkbox_pending "Using --force to override BIND's restrictions..."
+            log_warning "Attempting to force rollover by adjusting key timings"
+            echo ""
+            echo "⚠️  FORCING ROLLOVER (Testing Mode)"
+            echo "   Overriding BIND's key timing restrictions"
+            echo ""
+
+            # Find key file
+            local key_file
+            key_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${current_key_tag}\.key$" | head -1)
+
+            if [[ -z "$key_file" ]]; then
+                checkbox_fail "Key file not found"
+                log_error "Cannot find key file for key $current_key_tag in $KEYS_DIR"
+                return 1
+            fi
+
+            # Set all key timings to NOW to force BIND to accept it
+            log_debug "Adjusting key timings: $key_file"
+            if ! dnssec-settime -P now -A now "$key_file" >/dev/null 2>&1; then
+                checkbox_fail "Failed to adjust key timings"
+                log_error "dnssec-settime command failed"
+                return 1
+            fi
+
+            # Fix ownership on all related key files (.key, .private, .state)
+            local key_base="${key_file%.key}"
+            for ext in key private state; do
+                local key_related_file="${key_base}.${ext}"
+                if [[ -f "$key_related_file" ]]; then
+                    if chown bind:bind "$key_related_file" 2>/dev/null; then
+                        log_debug "Set ownership bind:bind on $(basename "$key_related_file")"
+                    else
+                        log_warning "Could not set ownership on $(basename "$key_related_file") - may need sudo"
+                    fi
+                fi
+            done
+
+            # Reload keys in BIND
+            if ! rndc loadkeys "$zone" >/dev/null 2>&1; then
+                checkbox_fail "Failed to reload keys"
+                log_error "rndc loadkeys command failed"
+                return 1
+            fi
+
+            # Wait for BIND to process
+            sleep 3
+
+            # Try rollover again
+            checkbox_pending "Retrying rollover after force-adjusting timings..."
+            if rndc_output=$(rndc dnssec -rollover -key "$current_key_tag" "$zone" 2>&1); then
+                checkbox_done "Rollover forced successfully"
+                if [[ -n "$rndc_output" ]]; then
+                    echo "$rndc_output" | sed 's/^/         /'
+                fi
+            else
+                checkbox_fail "Rollover still failed even with --force"
+                log_error "BIND still rejected rollover: $rndc_output"
+                echo ""
+                echo "Even with --force, BIND will not accept the rollover."
+                echo "This might indicate a deeper issue with the key or zone configuration."
+                echo ""
+                return 1
+            fi
+        else
+            # No --force: Show helpful message
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "  WHAT TO DO?"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "Option 1 (Recommended): WAIT"
+            echo "  → Wait for BIND's internal timings to complete"
+            echo "  → Check status: $ rndc dnssec -status $zone"
+            echo "  → Try again later: $ dnssecctl --initiate-rollover $zone"
+            echo ""
+            echo "Option 2 (Testing only): FORCE NOW"
+            echo "  → Run: $ dnssecctl --initiate-rollover $zone --force"
+            echo "  → This adjusts key timings to bypass BIND's restrictions"
+            echo "  → ⚠️  Only use for testing, not in production!"
+            echo ""
+            return 1
+        fi
+    fi
+
+    echo ""
+    checkbox_pending "Waiting for BIND to process..."
+    sleep 3
+
+    # Verify rollover started
+    checkbox_pending "Verifying rollover status..."
+    local new_status
+    if ! new_status=$(rndc dnssec -status "$zone" 2>&1); then
+        checkbox_fail "Failed to get DNSSEC status"
+        return 1
+    fi
+
+    # Count keys - should now have 2 keys during rollover
+    local key_count
+    key_count=$(echo "$new_status" | grep -cE '^key:.*KSK|^key:.*CSK' || true)
+
+    if [[ $key_count -gt 1 ]]; then
+        checkbox_done "Rollover in progress: $key_count keys detected"
+    else
+        checkbox_done "Rollover initiated: New key will be generated shortly"
+    fi
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}  ROLLOVER INITIATED SUCCESSFULLY${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  ROLLOVER INITIATED SUCCESSFULLY"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "Next steps:"
+    echo "  1. Monitor with: $ dnssecctl --validate $zone"
+    echo "  2. Wait for email notification about new key"
+    echo "  3. Update key at registrar (Netcup)"
+    echo "  4. BIND will complete rollover automatically"
+    echo ""
+    echo "Check status: $ rndc dnssec -status $zone"
+    echo ""
+
+    # Generate and send email notification with new key details
+    checkbox_pending "Generating email notification..."
+
+    # Find the new key from status
+    local new_key_tag=""
+    local new_key_type=""
+
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+            local key_tag key_type
+            key_tag=$(echo "$line" | awk '{print $2}')
+            key_type=$(echo "$line" | awk -F'[,)]' '{print $NF}' | xargs)
+
+            # Skip the current active key
+            if [[ "$key_tag" == "$current_key_tag" ]]; then
+                continue
+            fi
+
+            # Get key states
+            local published ds_state
+            published=$(echo "$new_status" | grep -A 3 "key: $key_tag" | grep "published:" | awk '{print $2}')
+            ds_state=$(echo "$new_status" | grep -A 10 "key: $key_tag" | grep "  - ds:" | awk '{print $3}')
+
+            # Find new key (published=yes, ds=rumoured/hidden)
+            if [[ "$published" == "yes" ]] && [[ "$ds_state" =~ (rumoured|hidden) ]]; then
+                new_key_tag="$key_tag"
+                new_key_type="$key_type"
+                break
+            fi
+        fi
+    done < <(echo "$new_status" | grep '^key:')
+
+    if [[ -z "$new_key_tag" ]]; then
+        checkbox_fail "Could not identify new key for email notification"
+        log_to_file "Warning: Rollover initiated but new key not yet visible in status"
+        return 0
+    fi
+
+    # Get DNSKEY records from key files (already normalized)
+    local new_dnskey_record="" old_dnskey_record=""
+    local new_keyfile old_keyfile
+    new_keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${new_key_tag}\.key$" | head -1)
+    old_keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${current_key_tag}\.key$" | head -1)
+
+    if [[ -f "$new_keyfile" ]]; then
+        # Get full normalized record, then extract the DNSKEY part (fields 5+)
+        # normalize_dnskey_record already concatenated base64, so we can safely extract fields
+        new_dnskey_record=$(grep "^${zone}\." "$new_keyfile" | grep "IN DNSKEY" | normalize_dnskey_record | awk '{printf "%s %s %s ", $5, $6, $7; for(i=8;i<=NF;i++) printf "%s", $i; print ""}')
+    fi
+
+    if [[ -f "$old_keyfile" ]]; then
+        old_dnskey_record=$(grep "^${zone}\." "$old_keyfile" | grep "IN DNSKEY" | normalize_dnskey_record | awk '{printf "%s %s %s ", $5, $6, $7; for(i=8;i<=NF;i++) printf "%s", $i; print ""}')
+    fi
+
+
+    if [[ -f "$new_keyfile" ]]; then
+        new_ds_record=$(dnssec-dsfromkey -2 "$new_keyfile" 2>/dev/null)
+    fi
+    if [[ -f "$old_keyfile" ]]; then
+        old_ds_record=$(dnssec-dsfromkey -2 "$old_keyfile" 2>/dev/null)
+    fi
+
+    # Generate email body in TMPFILE
+    cat > "$TMPFILE" <<EOF
+SUBJECT: [$zone] DNSSEC Rollover Initiated - Key $new_key_tag
+
+═══════════════════════════════════════════════════════════════
+  DNSSEC ROLLOVER INITIATED: $zone
+═══════════════════════════════════════════════════════════════
+
+A DNSSEC key rollover has been manually initiated for: $zone
+
+OLD KEY: $current_key_tag ($current_key_type)
+  DS Record:
+    ${old_ds_record}
+
+  DNSKEY Record:
+    ${zone}. 3600 IN DNSKEY ${old_dnskey_record}
+
+NEW KEY: $new_key_tag ($new_key_type)
+  DS Record:
+    ${new_ds_record}
+
+  DNSKEY Record:
+    ${zone}. 3600 IN DNSKEY ${new_dnskey_record}
+
+═══════════════════════════════════════════════════════════════
+  📊 ROLLOVER STATUS - PHASE 1 STARTED
+═══════════════════════════════════════════════════════════════
+
+Phase 1: DNSKEY Generation ✅ COMPLETE
+  ├─ BIND generated new $new_key_type key $new_key_tag
+  ├─ DNSKEY published in DNS
+  └─ Status: ds = rumoured
+
+Phase 2: DNSKEY Propagation (2 days) ⏳ IN PROGRESS
+  ├─ DNSKEY propagating worldwide
+  ├─ Resolvers caching the new key
+  └─ Wait approximately 2 days
+
+Phase 3: DS-Record Update (MANUAL) ⏳ WAITING
+  ⚠️  ACTION REQUIRED IN ~2 DAYS:
+  ├─ Login at registrar
+  ├─ Add DS record for key $new_key_tag
+  └─ Remove old DS record ($current_key_tag)
+
+Phase 4: DS Propagation (2-4 days) ⏳ WAITING
+  ├─ Parent zone propagates DS
+  ├─ Run: rndc dnssec -checkds -key $new_key_tag published $zone
+  └─ Status changes to: ds = omnipresent
+
+Phase 5: Old Key Removal (automatic) ⏳ WAITING
+  ├─ BIND removes old key
+  └─ Rollover complete
+
+═══════════════════════════════════════════════════════════════
+  ⏱️  TIMELINE
+═══════════════════════════════════════════════════════════════
+
+Day 0 (Today):     Rollover initiated, new key published
+Day 2:             Update DS record at registrar
+Day 4-6:           Verify DS propagation, notify BIND
+Day 7-10:          BIND completes rollover automatically
+
+═══════════════════════════════════════════════════════════════
+  🔧 bash snippets
+═══════════════════════════════════════════════════════════════
+
+Check status anytime with:
+  $ dnssecctl --validate $zone
+  $ rndc dnssec -status $zone
+
+You will receive another email notification when ready for Phase 3
+(DS update at registrar).
+
+═══════════════════════════════════════════════════════════════
+Generated: $(date '+%Y-%m-%d %H:%M:%S')
+Script: dnssecctl v$VERSION
+═══════════════════════════════════════════════════════════════
+EOF
+
+    # Send email
+    local subject="[$zone] DNSSEC Rollover Initiated - Key $new_key_tag"
+    local email_body="/tmp/dnssecctl-initiate-$zone-$$.txt"
+
+    # Remove SUBJECT line from body
+    grep -v "^SUBJECT:" "$TMPFILE" > "$email_body"
+
+    if [[ -n "$EMAIL" ]]; then
+        if mail -s "$subject" "$EMAIL" < "$email_body"; then
+            checkbox_done "Email notification sent to $EMAIL"
+            log_to_file "Email sent: $subject"
+        else
+            checkbox_fail "Failed to send email notification"
+            log_to_file "Failed to send email: $subject"
+        fi
+    else
+        checkbox_fail "EMAIL not configured - no email sent"
+        log_to_file "Warning: EMAIL not configured in /etc/dnssecctl.conf"
+    fi
+
+    # Clean up
+    rm -f "$email_body"
+
+    return 0
+}
+
+abort_rollover() {
+    local zone="$1"
+    local status="$2"
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_RED}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_RED}  ABORT DNSSEC ROLLOVER FOR: ${COLOR_YELLOW}$zone${COLOR_RESET}"
+        echo -e "${COLOR_RED}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  ABORT DNSSEC ROLLOVER FOR: $zone"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+
+    echo ""
+    echo "⚠️  WARNING: Aborting a DNSSEC rollover!"
+    echo ""
+
+    # Find keys
+    local new_key_tag="" old_key_tag=""
+    local new_key_type="" old_key_type=""
+
+    # Collect all keys first
+    local -a all_keys all_types all_timestamps
+    all_keys=()
+    all_types=()
+    all_timestamps=()
+
+    echo "Analyzing current key status..."
+    echo ""
+
+    # First pass: Collect all keys from rndc status
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+            local key_tag key_type
+            key_tag=$(echo "$line" | awk '{print $2}')
+            key_type=$(echo "$line" | awk -F'[,)]' '{print $NF}' | xargs)
+            all_keys+=("$key_tag")
+            all_types+=("$key_type")
+        fi
+    done < <(echo "$status" | grep '^key:')
+
+    # If we don't have exactly 2 keys, we can't do a rollover abort
+    if [[ ${#all_keys[@]} -ne 2 ]]; then
+        log_error "Expected exactly 2 keys for rollover abort, found ${#all_keys[@]}"
+        return 1
+    fi
+
+    # Second pass: Get creation timestamps from key files
+    for i in "${!all_keys[@]}"; do
+        local key_tag="${all_keys[$i]}"
+        local key_file
+
+        # Find the .key file for this key tag
+        key_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key_tag}\.key$" | head -1)
+
+        if [[ -n "$key_file" ]] && [[ -f "$key_file" ]]; then
+            # Extract creation timestamp from key file comment
+            # Format: ; Created: 20251225145500 (Thu Dec 25 15:55:00 2025)
+            local created_timestamp
+            created_timestamp=$(grep "Created:" "$key_file" | awk '{print $3}')
+
+            if [[ -n "$created_timestamp" ]]; then
+                all_timestamps[$i]="$created_timestamp"
+                log_debug "Key $key_tag created at: $created_timestamp"
+            else
+                log_warning "Could not find creation timestamp for key $key_tag"
+                all_timestamps[$i]="0"
+            fi
+        else
+            log_warning "Could not find key file for key $key_tag"
+            all_timestamps[$i]="0"
+        fi
+    done
+
+    # Identify NEW vs OLD based on timestamps
+    # NEW = newer timestamp (created later) → DELETE
+    # OLD = older timestamp (created earlier) → KEEP
+    local key1="${all_keys[0]}"
+    local key2="${all_keys[1]}"
+    local ts1="${all_timestamps[0]}"
+    local ts2="${all_timestamps[1]}"
+
+    log_debug "Key $key1 timestamp: $ts1"
+    log_debug "Key $key2 timestamp: $ts2"
+
+    # Compare timestamps (higher = newer)
+    if [[ "$ts1" -gt "$ts2" ]]; then
+        # Key1 is newer → DELETE
+        new_key_tag="$key1"
+        new_key_type="${all_types[0]}"
+        old_key_tag="$key2"
+        old_key_type="${all_types[1]}"
+    else
+        # Key2 is newer → DELETE
+        new_key_tag="$key2"
+        new_key_type="${all_types[1]}"
+        old_key_tag="$key1"
+        old_key_type="${all_types[0]}"
+    fi
+
+    # Get states for display
+    local new_published new_key_signing new_zone_signing new_ds_state new_dnskey_state
+    new_published=$(echo "$status" | grep -A 3 "key: $new_key_tag" | grep "published:" | awk '{print $2}')
+    new_key_signing=$(echo "$status" | grep -A 4 "key: $new_key_tag" | grep "key signing:" | awk '{print $3}')
+    new_zone_signing=$(echo "$status" | grep -A 5 "key: $new_key_tag" | grep "zone signing:" | awk '{print $3}')
+    new_ds_state=$(echo "$status" | grep -A 20 "key: $new_key_tag" | grep "  - ds:" | awk '{print $3}' | head -1)
+    new_dnskey_state=$(echo "$status" | grep -A 20 "key: $new_key_tag" | grep "  - dnskey:" | awk '{print $3}' | head -1)
+
+    local old_published old_key_signing old_zone_signing old_ds_state old_dnskey_state
+    old_published=$(echo "$status" | grep -A 3 "key: $old_key_tag" | grep "published:" | awk '{print $2}')
+    old_key_signing=$(echo "$status" | grep -A 4 "key: $old_key_tag" | grep "key signing:" | awk '{print $3}')
+    old_zone_signing=$(echo "$status" | grep -A 5 "key: $old_key_tag" | grep "zone signing:" | awk '{print $3}')
+    old_ds_state=$(echo "$status" | grep -A 20 "key: $old_key_tag" | grep "  - ds:" | awk '{print $3}' | head -1)
+    old_dnskey_state=$(echo "$status" | grep -A 20 "key: $old_key_tag" | grep "  - dnskey:" | awk '{print $3}' | head -1)
+
+    # Display NEW KEY
+    if [[ -t 1 ]]; then
+        echo -e "  ${COLOR_GREEN}NEW KEY (to be removed):${COLOR_RESET}"
+        echo -e "    ${COLOR_YELLOW}Key $new_key_tag${COLOR_RESET} ($new_key_type)"
+    else
+        echo "  NEW KEY (to be removed):"
+        echo "    Key $new_key_tag ($new_key_type)"
+    fi
+    echo "    Created: $(date -d "${all_timestamps[$([ "$new_key_tag" == "$key1" ] && echo 0 || echo 1)]}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo ${all_timestamps[$([ "$new_key_tag" == "$key1" ] && echo 0 || echo 1)]})"
+    echo "    Published: $new_published, Key Signing: $new_key_signing, Zone Signing: $new_zone_signing"
+    echo "    DS State: $new_ds_state, DNSKEY State: $new_dnskey_state"
+    echo ""
+
+    # Display OLD KEY
+    if [[ -t 1 ]]; then
+        echo -e "  ${COLOR_CYAN}OLD KEY (to keep):${COLOR_RESET}"
+        echo -e "    ${COLOR_YELLOW}Key $old_key_tag${COLOR_RESET} ($old_key_type)"
+    else
+        echo "  OLD KEY (to keep):"
+        echo "    Key $old_key_tag ($old_key_type)"
+    fi
+    echo "    Created: $(date -d "${all_timestamps[$([ "$old_key_tag" == "$key1" ] && echo 0 || echo 1)]}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo ${all_timestamps[$([ "$old_key_tag" == "$key1" ] && echo 0 || echo 1)]})"
+    echo "    Published: $old_published, Key Signing: $old_key_signing, Zone Signing: $old_zone_signing"
+    echo "    DS State: $old_ds_state, DNSKEY State: $old_dnskey_state"
+    echo ""
+
+    # Check if we found keys to work with
+    if [[ -z "$new_key_tag" ]]; then
+        log_error "No new key found to abort. Rollover may have already completed or not started."
+        return 1
+    fi
+
+    if [[ -z "$old_key_tag" ]]; then
+        log_warning "No old key found. This is unusual. Proceeding with caution..."
+    fi
+
+    # Ask for confirmation
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_RED}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_RED}  CONFIRMATION REQUIRED${COLOR_RESET}"
+        echo -e "${COLOR_RED}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  CONFIRMATION REQUIRED"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "This will:"
+    echo "  1. Delete new key $new_key_tag from filesystem"
+    echo "  2. Tell BIND to reload keys for $zone"
+    echo "  3. Zone will continue with old key $old_key_tag"
+    echo ""
+    echo "⚠️  IMPORTANT: The new key must NOT be published at registrar yet!"
+    echo ""
+
+    read -r -p "Are you sure you want to abort rollover and remove key $new_key_tag? (yes/no): " confirm < /dev/tty
+
+    if [[ "$confirm" != "yes" ]]; then
+        log_info "Rollover abort cancelled by user"
+        return 1
+    fi
+
+    echo ""
+    checkbox_pending "Aborting rollover for $zone..."
+    echo ""
+
+    # Step 1: Find and delete new key files
+    checkbox_pending "Step 1: Deleting new key files..."
+    local deleted_files=0
+    local key_files
+
+    # Find key files - handle leading zeros (e.g., +01276 vs +1276)
+    # Include: .key, .private (but NOT .state - BIND manages these)
+    key_files=$(find "$KEYS_DIR" -name "*${zone}*" 2>/dev/null | grep -E "\+0*${new_key_tag}\.(key|private)$")
+
+    if [[ -z "$key_files" ]]; then
+        checkbox_fail "No key files found for key $new_key_tag"
+        log_error "Expected pattern: *${zone}*+${new_key_tag}.{key,private} (with optional leading zeros)"
+        log_error "Available files:"
+        find "$KEYS_DIR" -name "*${zone}*" -exec basename {} \; 2>/dev/null | while read -r f; do
+            log_error "  - $f"
+        done
+        return 1
+    fi
+
+    while IFS= read -r keyfile; do
+        if [[ -f "$keyfile" ]]; then
+            echo "         Deleting: $(basename "$keyfile")"
+            if rm -f "$keyfile"; then
+                ((deleted_files++))
+            else
+                log_error "Failed to delete: $keyfile"
+                return 1
+            fi
+        fi
+    done <<< "$key_files"
+
+    if [[ $deleted_files -eq 0 ]]; then
+        checkbox_fail "No key files were deleted"
+        return 1
+    fi
+
+    checkbox_done "Deleted $deleted_files key file(s)"
+    echo ""
+
+    # Step 1a: Delete zone files to force re-signing
+    checkbox_pending "Step 1a: Deleting zone files (forcing re-sign)..."
+    local deleted_zone_files=0
+
+    # Only delete zone files if ZONE_DIR is configured
+    if [[ -n "$ZONE_DIR" ]] && [[ -d "$ZONE_DIR" ]]; then
+        # Find and delete: .signed, .jnl, .jbk files for this zone
+        local zone_files
+        zone_files=$(find "$ZONE_DIR" -name "${zone}.signed" -o -name "${zone}.jnl" -o -name "${zone}.jbk" 2>/dev/null)
+
+        if [[ -n "$zone_files" ]]; then
+            while IFS= read -r zonefile; do
+                if [[ -f "$zonefile" ]]; then
+                    echo "         Deleting: $(basename "$zonefile")"
+                    if rm -f "$zonefile"; then
+                        ((deleted_zone_files++))
+                    else
+                        log_warning "Failed to delete: $zonefile"
+                    fi
+                fi
+            done <<< "$zone_files"
+        fi
+
+        if [[ $deleted_zone_files -gt 0 ]]; then
+            checkbox_done "Deleted $deleted_zone_files zone file(s)"
+        else
+            checkbox_done "No zone files to delete"
+        fi
+    else
+        checkbox_done "ZONE_DIR not configured, skipping"
+    fi
+    echo ""
+
+    # Step 2: Reactivate the old key
+    checkbox_pending "Step 2: Reactivating old key $old_key_tag..."
+
+    # Find old key file
+    local old_key_file
+    old_key_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${old_key_tag}\.key$" | head -1)
+
+    if [[ -z "$old_key_file" ]] || [[ ! -f "$old_key_file" ]]; then
+        checkbox_fail "Old key file not found for key $old_key_tag"
+        log_error "Cannot reactivate old key - file not found"
+        return 1
+    fi
+
+    # Remove Inactive and Delete timestamps, set Publish and Activate to now
+    # This makes the old key active again
+    if dnssec-settime -P now -A now -I none -D none "$old_key_file" >/dev/null 2>&1; then
+        # Fix ownership on all related key files (.key, .private, .state)
+        local old_key_base="${old_key_file%.key}"
+        for ext in key private state; do
+            local key_related_file="${old_key_base}.${ext}"
+            if [[ -f "$key_related_file" ]]; then
+                if chown bind:bind "$key_related_file" 2>/dev/null; then
+                    log_debug "Set ownership bind:bind on $(basename "$key_related_file")"
+                else
+                    log_warning "Could not set ownership on $(basename "$key_related_file") - may need sudo"
+                fi
+            fi
+        done
+        checkbox_done "Old key $old_key_tag reactivated (Inactive/Delete timestamps removed)"
+    else
+        checkbox_fail "Failed to reactivate old key"
+        log_error "dnssec-settime failed for $old_key_file"
+        return 1
+    fi
+    echo ""
+
+    # Step 3: Tell BIND to reload keys
+    checkbox_pending "Step 3: Reloading keys in BIND..."
+    if rndc loadkeys "$zone" 2>&1; then
+        checkbox_done "Keys reloaded successfully"
+    else
+        checkbox_fail "Failed to reload keys"
+        log_error "You may need to restart BIND manually: systemctl restart named"
+        return 1
+    fi
+    echo ""
+
+    # Give BIND a moment to process
+    checkbox_pending "Waiting for BIND to process..."
+    sleep 2
+
+    # Step 4: Verify result
+    checkbox_pending "Step 4: Verifying rollover abort..."
+    echo ""
+
+    local new_status
+    if ! new_status=$(rndc dnssec -status "$zone" 2>&1); then
+        checkbox_fail "Failed to get DNSSEC status"
+        return 1
+    fi
+
+    # Check if new key is gone
+    if echo "$new_status" | grep -q "key: $new_key_tag"; then
+        checkbox_fail "Key $new_key_tag still appears in BIND status"
+        log_warning "BIND may need time to process the change"
+        echo ""
+        echo "Current status:"
+        echo "$new_status"
+        return 1
+    fi
+
+    checkbox_done "New key $new_key_tag has been removed"
+
+    # Check if old key is present AND active
+    if [[ -n "$old_key_tag" ]]; then
+        if echo "$new_status" | grep -q "key: $old_key_tag"; then
+            checkbox_done "Old key $old_key_tag is still present"
+
+            # Verify it's active (published=yes, key signing=yes, zone signing=yes)
+            local is_published is_key_signing is_zone_signing
+            is_published=$(echo "$new_status" | grep -A 3 "key: $old_key_tag" | grep "published:" | awk '{print $2}')
+            is_key_signing=$(echo "$new_status" | grep -A 4 "key: $old_key_tag" | grep "key signing:" | awk '{print $3}')
+            is_zone_signing=$(echo "$new_status" | grep -A 5 "key: $old_key_tag" | grep "zone signing:" | awk '{print $3}')
+
+            if [[ "$is_published" == "yes" ]] && [[ "$is_key_signing" == "yes" ]] && [[ "$is_zone_signing" == "yes" ]]; then
+                checkbox_done "Old key $old_key_tag is ACTIVE (published=yes, signing=yes)"
+            else
+                checkbox_fail "Old key $old_key_tag exists but is NOT active!"
+                log_warning "Published: $is_published, Key Signing: $is_key_signing, Zone Signing: $is_zone_signing"
+                log_warning "The key may need time to activate. Check status again in a few minutes."
+            fi
+        else
+            checkbox_fail "Old key $old_key_tag not found!"
+            log_error "This is unexpected. Check BIND configuration."
+            return 1
+        fi
+    fi
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}  ROLLOVER SUCCESSFULLY ABORTED${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  ROLLOVER SUCCESSFULLY ABORTED"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "Summary:"
+    echo "  ✓ New key $new_key_tag has been removed"
+    if [[ -n "$old_key_tag" ]]; then
+        echo "  ✓ Old key $old_key_tag has been reactivated"
+        echo "  ✓ Zone continues with old key $old_key_tag"
+    fi
+    echo "  ✓ BIND has reloaded keys"
+    echo "  ✓ Zone signing continues normally"
+    echo ""
+    echo "Final DNSSEC status:"
+    echo ""
+    echo "$new_status"
+    echo ""
+
+    return 0
+}
+
+force_rollover() {
+    local zone="$1"
+    local status="$2"
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_RED}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_RED}  FORCE DNSSEC ROLLOVER (PHASE 5) FOR: ${COLOR_YELLOW}$zone${COLOR_RESET}"
+        echo -e "${COLOR_RED}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  FORCE DNSSEC ROLLOVER (PHASE 5) FOR: $zone"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+
+    echo ""
+    echo "⚠️  WARNING: Forcing Phase 5 completion!"
+    echo ""
+
+    # Find old key (key being removed) and new key (active)
+    local old_key_tag="" new_key_tag=""
+
+    echo "Analyzing current key status..."
+    echo ""
+
+    # PRIMARY METHOD: Use Creation Timestamps from key files (MOST RELIABLE!)
+    # Get all KSK/CSK key tags
+    local -a key_tags=()
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+            local key_tag
+            key_tag=$(echo "$line" | awk '{print $2}')
+            key_tags+=("$key_tag")
+        fi
+    done < <(echo "$status" | grep '^key:')
+
+    if [[ ${#key_tags[@]} -eq 2 ]]; then
+        local key1="${key_tags[0]}"
+        local key2="${key_tags[1]}"
+
+        # Get creation timestamps from key files
+        local key1_file key2_file key1_created key2_created
+        key1_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key1}\.key$" | head -1)
+        key2_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key2}\.key$" | head -1)
+
+        if [[ -f "$key1_file" ]] && [[ -f "$key2_file" ]]; then
+            # Extract creation timestamps (format: 20251225162736)
+            key1_created=$(grep "; Created:" "$key1_file" | awk '{print $3}' | head -1)
+            key2_created=$(grep "; Created:" "$key2_file" | awk '{print $3}' | head -1)
+
+            if [[ -n "$key1_created" ]] && [[ -n "$key2_created" ]]; then
+                log_debug "Key $key1 created: $key1_created"
+                log_debug "Key $key2 created: $key2_created"
+
+                # Compare timestamps: higher timestamp = newer = NEW key (to keep)
+                # Lower timestamp = older = OLD key (to remove)
+                if [[ "$key1_created" > "$key2_created" ]]; then
+                    new_key_tag="$key1"
+                    old_key_tag="$key2"
+                    log_debug "PRIMARY (timestamp): NEW=$key1 (created $key1_created), OLD=$key2 (created $key2_created)"
+                else
+                    new_key_tag="$key2"
+                    old_key_tag="$key1"
+                    log_debug "PRIMARY (timestamp): NEW=$key2 (created $key2_created), OLD=$key1 (created $key1_created)"
+                fi
+            else
+                log_debug "Timestamps not found in key files, falling back to states"
+            fi
+        else
+            log_debug "Key files not found, falling back to states"
+        fi
+    fi
+
+    # FALLBACK METHOD: Use DS state (only if timestamps failed)
+    if [[ -z "$new_key_tag" ]] || [[ -z "$old_key_tag" ]]; then
+        log_debug "Using DS state-based identification as fallback"
+
+        while IFS= read -r line; do
+            if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+                local key_tag key_type
+                key_tag=$(echo "$line" | awk '{print $2}')
+                key_type=$(echo "$line" | awk -F'[,)]' '{print $NF}' | xargs)
+
+                local published key_signing zone_signing ds_state
+                published=$(echo "$status" | grep -A 3 "key: $key_tag" | grep "published:" | awk '{print $2}')
+                key_signing=$(echo "$status" | grep -A 4 "key: $key_tag" | grep "key signing:" | awk '{print $3}')
+                zone_signing=$(echo "$status" | grep -A 5 "key: $key_tag" | grep "zone signing:" | awk '{print $3}')
+                ds_state=$(echo "$status" | grep -A 20 "key: $key_tag" | grep "  - ds:" | awk '{print $3}' | head -1)
+
+                log_debug "FALLBACK: Key $key_tag: published=$published, key_signing=$key_signing, zone_signing=$zone_signing, ds=$ds_state"
+
+                # Classify based on DS state
+                if [[ "$ds_state" =~ ^(rumoured|omnipresent)$ ]] && [[ -z "$new_key_tag" ]]; then
+                    new_key_tag="$key_tag"
+                    log_debug "FALLBACK: Found new key based on DS state: $key_tag (ds=$ds_state)"
+                elif [[ "$ds_state" =~ ^(unretentive|hidden)$ ]] && [[ -z "$old_key_tag" ]]; then
+                    old_key_tag="$key_tag"
+                    log_debug "FALLBACK: Found old key based on DS state: $key_tag (ds=$ds_state)"
+                fi
+            fi
+        done < <(echo "$status" | grep '^key:')
+
+        # ULTIMATE FALLBACK: Use key tag numbers (least reliable)
+        if [[ -z "$new_key_tag" ]] || [[ -z "$old_key_tag" ]]; then
+            log_debug "ULTIMATE FALLBACK: Using key tag comparison"
+
+            if [[ ${#key_tags[@]} -eq 2 ]]; then
+                # Assume higher key tag is newer
+                if [[ ${key_tags[0]} -gt ${key_tags[1]} ]]; then
+                    [[ -z "$new_key_tag" ]] && new_key_tag="${key_tags[0]}"
+                    [[ -z "$old_key_tag" ]] && old_key_tag="${key_tags[1]}"
+                else
+                    [[ -z "$new_key_tag" ]] && new_key_tag="${key_tags[1]}"
+                    [[ -z "$old_key_tag" ]] && old_key_tag="${key_tags[0]}"
+                fi
+                log_debug "ULTIMATE FALLBACK (tag numbers): new=$new_key_tag, old=$old_key_tag"
+            fi
+        fi
+    fi
+
+    if [[ -z "$old_key_tag" ]]; then
+        checkbox_fail "No old key found - nothing to force"
+        log_error "Cannot force rollover: No old key detected for $zone"
+        return 1
+    fi
+
+    if [[ -z "$new_key_tag" ]]; then
+        checkbox_fail "No new/active key found"
+        log_error "Cannot force rollover: No active key detected for $zone"
+        return 1
+    fi
+
+    checkbox_done "Old key: $old_key_tag"
+    checkbox_done "New key: $new_key_tag (active)"
+    echo ""
+
+    # Show what will be done
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_YELLOW}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  CONFIRMATION REQUIRED${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  CONFIRMATION REQUIRED"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "This will FORCE Phase 5 completion for: $zone"
+    echo "Old key to remove: $old_key_tag"
+    echo "New key (active): $new_key_tag"
+    echo ""
+    echo "Actions to be performed:"
+    echo "  1. Delete old key files ($KEYS_DIR/*${old_key_tag}* - .key and .private only)"
+    echo "  2. Delete zone files (*.signed, *.jnl, *.jbk)"
+    echo "  3. Restart BIND9 (systemctl restart named/bind9)"
+    echo "  4. Wait 15 seconds for zone re-signing"
+    echo "  5. Verify old key removal"
+    echo ""
+    echo "⚠️  WARNING: This will restart BIND9!"
+    echo "⚠️  This bypasses BIND's retire-safety period!"
+    echo ""
+
+    read -r -p "Are you sure you want to force Phase 5 for $zone? (yes/no): " confirm < /dev/tty
+
+    if [[ "$confirm" != "yes" ]]; then
+        checkbox_fail "Force rollover cancelled by user"
+        return 1
+    fi
+
+    echo ""
+
+    # Step 1: Delete old key files (.key and .private only, NOT .state - BIND manages these)
+    checkbox_pending "Deleting old key files..."
+    local deleted_count=0
+
+    # Find key files with specific extensions (not wildcard - exclude .state)
+    local key_files
+    key_files=$(find "$KEYS_DIR" -name "*${zone}*" 2>/dev/null | grep -E "\+0*${old_key_tag}\.(key|private)$")
+
+    if [[ -n "$key_files" ]]; then
+        while IFS= read -r keyfile; do
+            if [[ -f "$keyfile" ]]; then
+                if rm -f "$keyfile"; then
+                    ((deleted_count++))
+                    log_debug "Deleted: $keyfile"
+                else
+                    checkbox_fail "Failed to delete: $keyfile"
+                    return 1
+                fi
+            fi
+        done <<< "$key_files"
+        checkbox_done "Deleted $deleted_count key file(s) for key $old_key_tag"
+    else
+        checkbox_done "No key files found to delete"
+    fi
+
+    # Step 1b: Delete zone files (signed zone, journals, backups)
+    checkbox_pending "Deleting zone files (signed, journals)..."
+    local zone_deleted=0
+
+    # Use ZONE_DIR if configured, otherwise try common directories
+    local zone_dirs=()
+    if [[ -n "$ZONE_DIR" ]] && [[ -d "$ZONE_DIR" ]]; then
+        zone_dirs=("$ZONE_DIR")
+    else
+        # Fallback to common directories
+        zone_dirs=("$BIND_CONFIG_DIR/zones" "/var/cache/bind" "/var/lib/bind")
+    fi
+
+    for zone_dir in "${zone_dirs[@]}"; do
+        if [[ -d "$zone_dir" ]]; then
+            # Delete .signed, .jnl, .jbk files for this zone
+            for pattern in "${zone}.zone.signed" "${zone}.zone.signed.jnl" "${zone}.zone.jnl" "${zone}.zone.jbk" \
+                          "${zone}.signed" "${zone}.signed.jnl" "${zone}.jnl" "${zone}.jbk"; do
+                local file="$zone_dir/$pattern"
+                if [[ -f "$file" ]]; then
+                    if rm -f "$file"; then
+                        ((zone_deleted++))
+                        log_debug "Deleted zone file: $file"
+                    fi
+                fi
+            done
+        fi
+    done
+
+    if [[ $zone_deleted -gt 0 ]]; then
+        checkbox_done "Deleted $zone_deleted zone file(s)"
+    else
+        checkbox_done "No zone files found to delete"
+    fi
+
+    # Step 2: Restart BIND to force re-signing
+    checkbox_pending "Restarting BIND to force zone re-signing..."
+    local restart_output
+    restart_output=$(systemctl restart named 2>&1 || systemctl restart bind9 2>&1)
+    local restart_status=$?
+
+    if [[ $restart_status -eq 0 ]]; then
+        checkbox_done "BIND restarted successfully"
+        log_debug "BIND restart output: $restart_output"
+    else
+        checkbox_fail "Failed to restart BIND"
+        echo "         Error: $restart_output"
+        log_debug "Failed to restart BIND: $restart_output"
+        return 1
+    fi
+
+    # Step 3: Wait for BIND to complete zone signing
+    checkbox_pending "Waiting for BIND to re-sign zone (15 seconds)..."
+    sleep 15
+    checkbox_done "Wait complete"
+
+    # Step 4: Verify old key is gone
+    checkbox_pending "Verifying old key removal..."
+    local new_status
+    if new_status=$(rndc dnssec -status "$zone" 2>&1); then
+        if echo "$new_status" | grep -qE "^key: $old_key_tag"; then
+            # Key still there - wait a bit more and check again
+            checkbox_pending "Old key still present, waiting 10 more seconds..."
+            sleep 10
+
+            if new_status=$(rndc dnssec -status "$zone" 2>&1); then
+                if echo "$new_status" | grep -qE "^key: $old_key_tag"; then
+                    checkbox_fail "Old key $old_key_tag still present in BIND"
+                    echo ""
+                    echo "The old key is still shown in BIND status."
+                    echo "BIND's retire-safety period prevents immediate removal."
+                    echo ""
+                    echo "To force immediate removal, run these commands manually:"
+                    echo "  1. Delete key files:"
+                    echo "     $ rm -f /etc/bind/keys/K${zone}*.${old_key_tag}.*"
+                    echo "  2. Edit BIND config to remove dnssec-policy (temporarily):"
+                    echo "     # Comment out dnssec-policy in zone config"
+                    echo "  3. Reload BIND:"
+                    echo "     $ systemctl reload named"
+                    echo "  4. Re-enable dnssec-policy and reload again"
+                    echo ""
+                    echo "Or wait until: $(echo "$new_status" | grep "will be removed on" | sed 's/.*will be removed on //')"
+                    echo ""
+                    echo "Check status: $ rndc dnssec -status $zone"
+                else
+                    checkbox_done "Old key $old_key_tag successfully removed"
+                fi
+            else
+                checkbox_fail "Failed to get DNSSEC status"
+                echo "         rndc error: $new_status"
+            fi
+        else
+            checkbox_done "Old key $old_key_tag successfully removed"
+        fi
+    else
+        checkbox_fail "Failed to get DNSSEC status"
+        echo "         rndc error: $new_status"
+        log_debug "Failed to get DNSSEC status: $new_status"
+        return 1
+    fi
+
+    echo ""
+
+    # Send email notification about Phase 5 completion
+    if [[ "$EMAIL_ENABLED" == "true" ]] && [[ -n "$EMAIL_RECIPIENT" ]]; then
+        log_debug "Sending Phase 5 completion email for $zone"
+
+        # Find key files for email generation
+        local new_keyfile old_keyfile
+        new_keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${new_key_tag}\.key$" | head -1)
+        # Old key files were deleted, so old_keyfile will be empty - that's OK
+        old_keyfile=""
+
+        # Get DNS status
+        local dns_status
+        if dns_status=$(rndc dnssec -status "$zone" 2>&1); then
+            # Generate Phase 4 style email (DS Propagation complete)
+            local email_body
+            email_body=$(generate_rollover_email "$zone" "$new_key_tag" "" "$new_keyfile" "" "$dns_status" "")
+
+            if send_email "$EMAIL_RECIPIENT" "$zone" "$email_body"; then
+                log_debug "Phase 5 completion email sent successfully"
+            else
+                log_warning "Failed to send Phase 5 completion email"
+            fi
+        else
+            log_warning "Could not get DNS status for email"
+        fi
+    fi
+
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}  PHASE 5 FORCED SUCCESSFULLY${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  PHASE 5 FORCED SUCCESSFULLY"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+    echo "Rollover should now be complete!"
+    echo ""
+    echo "Verify with:"
+    echo "  $ dnssecctl $zone"
+    echo "  $ rndc dnssec -status $zone"
+    echo "  $ dig +short @1.1.1.1 $zone DNSKEY"
+    echo ""
+
+    return 0
+}
+
+show_validation_info() {
+    local zone="$1"
+    local status="$2"
+
+    echo ""
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}  KSK KEY VALIDATION FOR: ${COLOR_YELLOW}$zone${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  KSK KEY VALIDATION FOR: $zone"
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+
+    # First, collect all keys with their creation times
+    local -a key_data=()
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+            local key_tag key_type
+            key_tag=$(echo "$line" | awk '{print $2}')
+            key_type=$(echo "$line" | awk -F'[,)]' '{print $NF}' | xargs)
+
+            # Find key file and get creation time
+            local keyfile creation_time=0
+            keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key_tag}\.key$" | head -1)
+
+            if [[ -f "$keyfile" ]]; then
+                # Get file modification time as Unix timestamp
+                creation_time=$(stat -c %Y "$keyfile" 2>/dev/null || stat -f %m "$keyfile" 2>/dev/null || echo "0")
+            fi
+
+            # Store: creation_time|key_tag|key_type
+            key_data+=("$creation_time|$key_tag|$key_type")
+        fi
+    done < <(echo "$status" | grep '^key:')
+
+    # Sort by creation time (newest first) - reverse numeric sort on first field
+    local -a sorted_keys
+    IFS=$'\n' sorted_keys=($(printf '%s\n' "${key_data[@]}" | sort -t'|' -k1 -rn))
+
+    # Count total keys for marking oldest/newest
+    local total_keys=${#sorted_keys[@]}
+    local key_index=0
+
+    # Parse each key in sorted order
+    for key_info in "${sorted_keys[@]}"; do
+        ((key_index++))
+
+        local creation_time key_tag key_type
+        IFS='|' read -r creation_time key_tag key_type <<< "$key_info"
+
+        # Get key states
+        local published key_signing zone_signing
+        published=$(echo "$status" | grep -A 3 "key: $key_tag" | grep "published:" | awk '{print $2}')
+        key_signing=$(echo "$status" | grep -A 4 "key: $key_tag" | grep "key signing:" | awk '{print $3}')
+        zone_signing=$(echo "$status" | grep -A 5 "key: $key_tag" | grep "zone signing:" | awk '{print $3}')
+
+        local ds_state dnskey_state
+        ds_state=$(echo "$status" | grep -A 20 "key: $key_tag" | grep "  - ds:" | awk '{print $3}' | head -1)
+        dnskey_state=$(echo "$status" | grep -A 20 "key: $key_tag" | grep "  - dnskey:" | awk '{print $3}' | head -1)
+
+        # Determine if active
+        local is_active="" active_color=""
+        if [[ "$published" == "yes" && "$key_signing" == "yes" ]]; then
+            is_active="ACTIVE ✓"
+            active_color="$COLOR_GREEN"
+        else
+            is_active="Inactive"
+            active_color="$COLOR_RESET"
+        fi
+
+        # Check registrar status via actual DNS query at parent
+        local registrar_status="" reg_color=""
+        local ds_at_parent=false
+
+        if check_ds_at_parent "$zone" "$key_tag"; then
+            registrar_status="✓ At registrar (DNS verified)"
+            reg_color="$COLOR_GREEN"
+            ds_at_parent=true
+        else
+            registrar_status="✗ Not at registrar (not in parent zone)"
+            reg_color="$COLOR_RED"
+            ds_at_parent=false
+        fi
+
+        # Additional hint if DS is at parent but BIND not notified
+        local bind_notification_hint=""
+        if [[ "$ds_at_parent" == true ]] && [[ "$ds_state" == "rumoured" ]]; then
+            bind_notification_hint="  ⚠️  BIND not yet notified - run: rndc dnssec -checkds -key $key_tag published $zone"
+        fi
+
+        # Get DS and DNSKEY records for this key
+        local ds_record="" dnskey_record=""
+        local keyfile
+        keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key_tag}\.key$" | head -1)
+
+        if [[ -f "$keyfile" ]]; then
+            # Get DS record
+            ds_record=$(dnssec-dsfromkey -2 "$keyfile" 2>/dev/null)
+            # Get DNSKEY record
+            dnskey_record=$(grep "^${zone}\." "$keyfile" | grep "IN DNSKEY" | normalize_dnskey_record)
+        fi
+
+        # Determine age label
+        local age_label=""
+        if [[ $key_index -eq 1 ]] && [[ $total_keys -gt 1 ]]; then
+            age_label=" ← NEWEST"
+        elif [[ $key_index -eq $total_keys ]] && [[ $total_keys -gt 1 ]]; then
+            age_label=" ← OLDEST"
+        fi
+
+        # Format creation time
+        local creation_date=""
+        if [[ "$creation_time" != "0" ]]; then
+            creation_date=$(date -d "@$creation_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$creation_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Unknown")
+        else
+            creation_date="Unknown"
+        fi
+
+        # Print key info with colors
+        if [[ -t 1 ]]; then
+            echo -e "${COLOR_YELLOW}Key $key_tag${COLOR_RESET} ($key_type) - ${active_color}${is_active}${COLOR_RESET}${COLOR_CYAN}${age_label}${COLOR_RESET}"
+            echo "  Created:       $creation_date"
+            echo "  Published:     $(if [[ "$published" == "yes" ]]; then echo -e "${COLOR_GREEN}✓ yes${COLOR_RESET}"; else echo -e "${COLOR_RED}✗ no${COLOR_RESET}"; fi)"
+            echo "  Key Signing:   $(if [[ "$key_signing" == "yes" ]]; then echo -e "${COLOR_GREEN}✓ yes${COLOR_RESET}"; else echo -e "${COLOR_RED}✗ no${COLOR_RESET}"; fi)"
+            echo "  Zone Signing:  $(if [[ "$zone_signing" == "yes" ]]; then echo -e "${COLOR_GREEN}✓ yes${COLOR_RESET}"; else echo -e "${COLOR_RED}✗ no${COLOR_RESET}"; fi)"
+            echo "  DNSKEY State:  $dnskey_state"
+            echo "  DS State:      $ds_state"
+            echo -e "  Registrar:     ${reg_color}${registrar_status}${COLOR_RESET}"
+
+            # Show BIND notification hint if needed
+            if [[ -n "$bind_notification_hint" ]]; then
+                echo -e "  ${COLOR_YELLOW}${bind_notification_hint}${COLOR_RESET}"
+            fi
+
+            # Show DS and DNSKEY records
+            if [[ -n "$ds_record" ]]; then
+                echo ""
+                echo "  DS Record:"
+                echo "    $ds_record"
+            fi
+            if [[ -n "$dnskey_record" ]]; then
+                echo ""
+                echo "  DNSKEY Record:"
+                echo "    $dnskey_record"
+            fi
+        else
+            echo "Key $key_tag ($key_type) - $is_active$age_label"
+            echo "  Created:       $creation_date"
+            echo "  Published:     $(if [[ "$published" == "yes" ]]; then echo "✓ yes"; else echo "✗ no"; fi)"
+            echo "  Key Signing:   $(if [[ "$key_signing" == "yes" ]]; then echo "✓ yes"; else echo "✗ no"; fi)"
+            echo "  Zone Signing:  $(if [[ "$zone_signing" == "yes" ]]; then echo "✓ yes"; else echo "✗ no"; fi)"
+            echo "  DNSKEY State:  $dnskey_state"
+            echo "  DS State:      $ds_state"
+            echo "  Registrar:     $registrar_status"
+
+            # Show BIND notification hint if needed
+            if [[ -n "$bind_notification_hint" ]]; then
+                echo "  $bind_notification_hint"
+            fi
+
+            # Show DS and DNSKEY records
+            if [[ -n "$ds_record" ]]; then
+                echo ""
+                echo "  DS Record:"
+                echo "    $ds_record"
+            fi
+            if [[ -n "$dnskey_record" ]]; then
+                echo ""
+                echo "  DNSKEY Record:"
+                echo "    $dnskey_record"
+            fi
+        fi
+    done
+
+    if [[ -t 1 ]]; then
+        echo -e "${COLOR_CYAN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    else
+        echo "═══════════════════════════════════════════════════════════════"
+    fi
+    echo ""
+}
+
+# ============================================================================
+# Phase 5 Cleanup - Nuclear Method
+# ============================================================================
+
+remove_old_key_nuclear() {
+    local zone="$1"
+    local old_key_tag="$2"
+
+    log_debug "Phase 5: Removing old key $old_key_tag using nuclear method..."
+
+    # Get zone file path
+    local zone_file
+    if ! zone_file=$(get_zone_file_path "$zone"); then
+        log_debug "ERROR: Could not determine zone file path"
+        return 1
+    fi
+
+    log_debug "Zone file: $zone_file"
+
+    if [[ "$DEBUG" == "true" ]]; then
+        echo "" >&2
+        echo "# Phase 5 Cleanup (NUCLEAR METHOD):" >&2
+        echo "# Removing old key $old_key_tag from zone $zone" >&2
+        echo "# This forces BIND to regenerate the signed zone without the old key" >&2
+        echo "" >&2
+    fi
+
+    # Step 1: Inform BIND that old key should be withdrawn
+    log_debug "Step 1: Marking old key as withdrawn..."
+    log_debug "Executing: rndc dnssec -checkds -key $old_key_tag withdrawn $zone"
+    if rndc dnssec -checkds -key "$old_key_tag" withdrawn "$zone" >/dev/null 2>&1; then
+        log_debug "  Old key marked as withdrawn in BIND"
+    else
+        log_debug "  Warning: Could not mark key as withdrawn (may already be removed)"
+    fi
+
+    # Step 2: Freeze the zone
+    log_debug "Step 2: Freezing zone..."
+    log_debug "Executing: rndc freeze $zone"
+    if rndc freeze "$zone" >/dev/null 2>&1; then
+        log_debug "  Zone frozen successfully"
+    else
+        log_debug "  Zone already frozen or freeze not needed"
+    fi
+
+    # Step 3: Delete signed zone and journal (Nuclear!)
+    log_debug "Step 3: Deleting signed zone and journal (nuclear option)..."
+    log_debug "Executing: rm -f ${zone_file}.signed ${zone_file}.signed.jnl"
+    if rm -f "${zone_file}.signed" "${zone_file}.signed.jnl"; then
+        log_debug "  Signed zone and journal deleted"
+    else
+        log_debug "  Warning: Could not delete signed zone files"
+    fi
+
+    # Step 4: Reload zone (BIND regenerates .signed with only current keys)
+    log_debug "Step 4: Reloading zone..."
+    log_debug "Executing: rndc reload $zone"
+    if rndc reload "$zone" >/dev/null 2>&1; then
+        log_debug "  Zone reloaded (BIND regenerating signed version)"
+    else
+        log_debug "  Warning: Zone reload reported an issue"
+    fi
+
+    # Step 5: Thaw the zone
+    log_debug "Step 5: Thawing zone..."
+    log_debug "Executing: rndc thaw $zone"
+    if rndc thaw "$zone" >/dev/null 2>&1; then
+        log_debug "  Zone thawed successfully"
+    else
+        log_debug "  Zone already thawed or thaw not needed"
+    fi
+
+    log_debug "Waiting for BIND to regenerate signed zone..."
+    sleep 5
+
+    log_debug "✓ Old key $old_key_tag removed via nuclear method"
+
+    return 0
+}
+
+# ============================================================================
+# Main Monitoring Logic
+# ============================================================================
+
+process_zone_keys() {
+    local zone="$1"
+    local status="$2"
+
+    log_debug "Processing keys for zone: $zone"
+
+    # Find NEW key and OLD key
+    local new_key_tag=""
+    local old_key_tag=""
+    local keys_found=()
+    local key_states=()
+
+    # FIRST PASS: Collect all keys and their states
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE '^key:.*KSK|^key:.*CSK'; then
+            local key_tag key_type
+            key_tag=$(echo "$line" | awk '{print $2}')
+            key_type=$(echo "$line" | awk -F'[,)]' '{print $NF}' | xargs)
+
+            log_debug "Found key: $key_tag ($key_type)"
+
+            # Get key states
+            local published ds_state dnskey_state key_signing
+            published=$(echo "$status" | grep -A 3 "key: $key_tag" | grep "published:" | awk '{print $2}')
+            ds_state=$(echo "$status" | grep -A 20 "key: $key_tag" | grep "  - ds:" | awk '{print $3}' | head -1)
+            dnskey_state=$(echo "$status" | grep -A 20 "key: $key_tag" | grep "  - dnskey:" | awk '{print $3}' | head -1)
+            key_signing=$(echo "$status" | grep -A 4 "key: $key_tag" | grep "key signing:" | awk '{print $3}')
+
+            log_debug "Key $key_tag - Published: $published, DS: $ds_state, DNSKEY: $dnskey_state, KeySigning: $key_signing"
+
+            keys_found+=("$key_tag")
+            key_states+=("$key_tag|$published|$ds_state|$dnskey_state|$key_signing")
+        fi
+    done < <(echo "$status" | grep '^key:')
+
+    # SECOND PASS: Identify NEW and OLD keys - ALWAYS use Creation Timestamps FIRST!
+    if [[ ${#keys_found[@]} -eq 2 ]]; then
+        # Rollover in progress - 2 keys present
+        log_debug "Rollover detected: 2 keys found"
+
+        local key1="${keys_found[0]}"
+        local key2="${keys_found[1]}"
+
+        # PRIMARY METHOD: Use Creation Timestamps from key files (MOST RELIABLE!)
+        local key1_file key2_file key1_created key2_created
+        key1_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key1}\.key$" | head -1)
+        key2_file=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${key2}\.key$" | head -1)
+
+        if [[ -f "$key1_file" ]] && [[ -f "$key2_file" ]]; then
+            # Extract creation timestamps (format: 20251225162736)
+            key1_created=$(grep "; Created:" "$key1_file" | awk '{print $3}' | head -1)
+            key2_created=$(grep "; Created:" "$key2_file" | awk '{print $3}' | head -1)
+
+            if [[ -n "$key1_created" ]] && [[ -n "$key2_created" ]]; then
+                log_debug "Key $key1 created: $key1_created"
+                log_debug "Key $key2 created: $key2_created"
+
+                # Compare timestamps: higher timestamp = newer = NEW key
+                if [[ "$key1_created" > "$key2_created" ]]; then
+                    new_key_tag="$key1"
+                    old_key_tag="$key2"
+                    log_debug "PRIMARY (timestamp): NEW=$key1 (created $key1_created), OLD=$key2 (created $key2_created)"
+                else
+                    new_key_tag="$key2"
+                    old_key_tag="$key1"
+                    log_debug "PRIMARY (timestamp): NEW=$key2 (created $key2_created), OLD=$key1 (created $key1_created)"
+                fi
+            else
+                log_debug "Timestamps not found in key files, falling back to states"
+            fi
+        else
+            log_debug "Key files not found, falling back to states"
+        fi
+
+        # FALLBACK METHOD: Use States (only if timestamps failed)
+        if [[ -z "$new_key_tag" ]] || [[ -z "$old_key_tag" ]]; then
+            log_debug "Using state-based identification as fallback"
+
+            for key_state in "${key_states[@]}"; do
+                IFS='|' read -r key_tag published ds_state dnskey_state key_signing <<< "$key_state"
+
+                # NEW key indicators:
+                # 1. ds=rumoured (key just generated, DS not yet at registrar)
+                # 2. dnskey=rumoured (new in DNS)
+                if [[ "$ds_state" == "rumoured" ]] && [[ -z "$new_key_tag" ]]; then
+                    new_key_tag="$key_tag"
+                    log_debug "FALLBACK (states): NEW key identified (ds=rumoured): $key_tag"
+                fi
+
+                # OLD key indicators:
+                # 1. dnskey=unretentive (key being removed)
+                # 2. ds=unretentive/hidden (DS being withdrawn)
+                # 3. published=no (key already removed from zone)
+                if [[ "$dnskey_state" == "unretentive" ]] || [[ "$ds_state" == "unretentive" ]] || [[ "$ds_state" == "hidden" ]]; then
+                    old_key_tag="$key_tag"
+                    log_debug "FALLBACK (states): OLD key identified (being removed): $key_tag"
+                elif [[ "$published" == "no" ]] && [[ -z "$old_key_tag" ]]; then
+                    old_key_tag="$key_tag"
+                    log_debug "FALLBACK (states): OLD key identified (published=no): $key_tag"
+                fi
+            done
+
+            # Ultimate fallback: Tag numbers (least reliable)
+            if [[ -z "$new_key_tag" ]] || [[ -z "$old_key_tag" ]]; then
+                log_debug "Using key tag numbers as ultimate fallback"
+                if [[ $key1 -gt $key2 ]]; then
+                    new_key_tag="${new_key_tag:-$key1}"
+                    old_key_tag="${old_key_tag:-$key2}"
+                else
+                    new_key_tag="${new_key_tag:-$key2}"
+                    old_key_tag="${old_key_tag:-$key1}"
+                fi
+                log_debug "ULTIMATE FALLBACK (tag numbers): NEW=$new_key_tag, OLD=$old_key_tag"
+            fi
+        fi
+    elif [[ ${#keys_found[@]} -eq 1 ]]; then
+        # Only one key - could be first setup or rollover complete
+        log_debug "Single key found: ${keys_found[0]}"
+
+        for key_state in "${key_states[@]}"; do
+            IFS='|' read -r key_tag published ds_state dnskey_state key_signing <<< "$key_state"
+
+            # If ds=rumoured/hidden, it's a NEW key (first setup or new rollover)
+            if [[ "$ds_state" =~ ^(rumoured|hidden)$ ]] && [[ "$published" == "yes" ]]; then
+                new_key_tag="$key_tag"
+                log_debug "NEW key (single, first setup): $key_tag"
+            fi
+        done
+    fi
+
+    # If we found a new key that needs registration, generate alert
+    if [[ -n "$new_key_tag" ]]; then
+        # Find key files to calculate days and phase FIRST (before any output)
+        local new_keyfile
+        new_keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${new_key_tag}\.key$" | head -1)
+
+        if [[ -f "$new_keyfile" ]]; then
+            local days_since_creation
+            days_since_creation=$(calculate_days_since_creation "$new_keyfile")
+
+            # Determine current phase EARLY - before any output
+            local current_phase
+            current_phase=$(determine_rollover_phase "$zone" "$new_key_tag" "$DNS_SERVER" "$days_since_creation")
+
+            # EARLY CHECK: If zone is healthy (Phase 4/5 complete), output simple status and return
+            if [[ $current_phase -ge 5 ]]; then
+                # Phase 5 complete - Zone in normal operation
+
+                # If there's an old key, perform nuclear cleanup
+                if [[ -n "$old_key_tag" ]]; then
+                    log_debug "Phase 5 detected with old key $old_key_tag - performing nuclear cleanup"
+                    if remove_old_key_nuclear "$zone" "$old_key_tag"; then
+                        log_debug "Old key $old_key_tag successfully removed from zone"
+                    else
+                        log_debug "Warning: Nuclear cleanup for old key $old_key_tag encountered issues"
+                    fi
+                fi
+
+                # Output simple healthy status
+                if [[ -t 1 ]]; then
+                    echo -e "[${COLOR_BOLD}${COLOR_GREEN}✓${COLOR_RESET}] $zone" >&2
+                else
+                    echo "[✓] $zone" >&2
+                fi
+
+                log_debug "Zone $zone: Rollover complete, in normal operation"
+                return 0  # No alert, no email - zone in normal operation
+
+            elif [[ $current_phase -eq 4 && -z "$old_key_tag" ]]; then
+                # Phase 4 complete with first key - no old key to remove
+
+                # Output simple healthy status
+                if [[ -t 1 ]]; then
+                    echo -e "[${COLOR_BOLD}${COLOR_GREEN}✓${COLOR_RESET}] $zone" >&2
+                else
+                    echo "[✓] $zone" >&2
+                fi
+
+                log_debug "Zone $zone: First DNSSEC key setup complete (no old key to remove)"
+                return 0  # No alert, no email - first setup is complete
+            fi
+
+            # If we reach here, zone needs attention - show details NOW
+            # Output rollover header - format depends on old_key presence
+            if [[ -z "$old_key_tag" ]]; then
+                # First DNSSEC key setup
+                log_action_required "$zone" "New key detected: $new_key_tag (needs registration)"
+                log_rollover_detail ">" "This appears to be the first DNSSEC key for $zone"
+            else
+                # KSK Rollover in progress
+                log_action_required "$zone" "KSK rollover for $zone in progress (new=$new_key_tag, old=$old_key_tag)"
+            fi
+
+            # Show visual rollover status
+            if [[ $current_phase -ge 1 ]]; then
+                log_rollover_detail "✓" "Phase 1: DNSKEY generated"
+            else
+                log_rollover_detail "!" "Phase 1: DNSKEY generation (pending)"
+            fi
+
+            if [[ $current_phase -ge 2 ]]; then
+                log_rollover_detail "✓" "Phase 2: DNSKEY propagated ($days_since_creation days)"
+            else
+                log_rollover_detail "!" "Phase 2: DNSKEY propagation (wait $((2 - days_since_creation)) more day(s))"
+            fi
+
+            if [[ $current_phase -ge 3 ]]; then
+                log_rollover_detail "✓" "Phase 3: DS updated at registrar"
+            else
+                log_rollover_detail "!" "Phase 3: DS update at registrar (← YOU ARE HERE)"
+
+                # Show DS and DNSKEY records for user to add at registrar (DEBUG only)
+                if [[ -f "$new_keyfile" ]] && [[ "$DEBUG" == "true" ]]; then
+                    echo "" >&2
+                    log_rollover_detail ">" "DS Record to add at registrar:"
+                    local ds_record
+                    if ds_record=$(dnssec-dsfromkey -2 "$new_keyfile" 2>&1); then
+                        echo "$ds_record" | sed 's/^/    /' >&2
+                    fi
+
+                    # Also show DNSKEY record
+                    local dnskey_record
+                    dnskey_record=$(grep "^${zone}\." "$new_keyfile" | grep "IN DNSKEY" | normalize_dnskey_record)
+                    if [[ -n "$dnskey_record" ]]; then
+                        echo "" >&2
+                        log_rollover_detail ">" "DNSKEY Record:"
+                        echo "$dnskey_record" | sed 's/^/    /' >&2
+                    fi
+                    echo "" >&2
+                fi
+            fi
+
+            if [[ $current_phase -ge 4 ]]; then
+                log_rollover_detail "✓" "Phase 4: DS propagated"
+            else
+                log_rollover_detail "!" "Phase 4: DS propagation (waiting)"
+            fi
+
+            # Phase 5: Old Key Removal
+            # Note: Phase 5 complete is already handled above (early return)
+            # If we reach here, we're in Phase 4 with old_key waiting for Phase 5
+            if [[ $current_phase -eq 4 ]]; then
+                # Phase 4 complete with old key - prepare for Phase 5
+                local phase5_status="pending"
+                local bind_notified=false
+
+                # Show copy-pastable rndc command in debug mode
+                if [[ "$DEBUG" == "true" ]]; then
+                    echo "" >&2
+                    echo "# Copy-paste this command to complete rollover:" >&2
+                    echo "$ rndc dnssec -checkds -key $old_key_tag withdrawn $zone" >&2
+                    echo "" >&2
+                fi
+
+                # If Phase 4 is complete, BIND was already informed about new KSK (DS published)
+                # This happened when DS was found at parent
+                bind_notified=true
+
+                # Inform BIND that old key's DS was withdrawn
+                if rndc dnssec -checkds -key "$old_key_tag" withdrawn "$zone" >/dev/null 2>&1; then
+                    phase5_status="pending, bind notified"
+                    log_debug "Informed BIND: Old key $old_key_tag withdrawn from $zone"
+                else
+                    # Old key not found in BIND, but new KSK was notified
+                    phase5_status="pending, bind notified"
+                    log_debug "Note: Old key $old_key_tag not found in BIND (may already be removed)"
+                fi
+
+                # Calculate time remaining until old key removal
+                local time_remaining=""
+                if [[ -n "$old_key_tag" ]]; then
+                    # Get next key event time for the old key from BIND status
+                    local next_event
+                    next_event=$(echo "$status" | grep -A 20 "^key: $old_key_tag" | grep "next key event:" | head -1 | sed 's/.*next key event: *//')
+
+                    log_debug "Old key $old_key_tag - next event raw: '$next_event'"
+
+                    if [[ -n "$next_event" ]]; then
+                        # Parse the BIND timestamp format: 21-Dec-2025 11:43:16.000
+                        # Convert to Unix timestamp
+                        local event_timestamp
+                        event_timestamp=$(date -d "$next_event" +%s 2>/dev/null)
+
+                        log_debug "Event timestamp: $event_timestamp"
+
+                        if [[ -n "$event_timestamp" ]]; then
+                            local current_timestamp
+                            current_timestamp=$(date +%s)
+
+                            local seconds_remaining=$((event_timestamp - current_timestamp))
+
+                            log_debug "Seconds remaining: $seconds_remaining"
+
+                            if [[ $seconds_remaining -gt 0 ]]; then
+                                # Format the time remaining
+                                local hours=$((seconds_remaining / 3600))
+                                local minutes=$(( (seconds_remaining % 3600) / 60 ))
+
+                                if [[ $hours -gt 0 ]]; then
+                                    time_remaining=", in ${hours}:$(printf "%02d" $minutes) hours"
+                                elif [[ $minutes -gt 0 ]]; then
+                                    time_remaining=", in $minutes minutes"
+                                else
+                                    time_remaining=", in less than a minute"
+                                fi
+
+                                log_debug "Formatted time remaining: '$time_remaining'"
+                            elif [[ $seconds_remaining -lt 0 ]]; then
+                                # Event time has passed
+                                time_remaining=", overdue"
+                                log_debug "Event is overdue"
+                            fi
+                        else
+                            log_debug "Failed to parse event timestamp from: '$next_event'"
+                        fi
+                    else
+                        log_debug "No next key event found for old key $old_key_tag"
+                    fi
+                fi
+
+                log_rollover_detail "!" "Phase 5: Old key removal ($phase5_status$time_remaining)"
+            else
+                log_rollover_detail "!" "Phase 5: Old key removal (pending)"
+            fi
+        fi
+
+        # Find key files - handle leading zeros in filename (e.g., +01276 vs +1276)
+        local old_keyfile
+
+        # Debug: List all key files for this zone
+        log_debug "Searching for key files in: $KEYS_DIR"
+        if [[ "$DEBUG" == true ]]; then
+            log_debug "Available key files:"
+            find "$KEYS_DIR" -name "*${zone}*.key" -exec basename {} \; 2>/dev/null | while read -r f; do
+                log_debug "  - $f"
+            done
+        fi
+
+        # Find old key if specified
+        old_keyfile=""  # Initialize to avoid unset variable error
+        if [[ -n "$old_key_tag" ]]; then
+            old_keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${old_key_tag}\.key$" | head -1)
+        fi
+
+        if [[ -f "$new_keyfile" ]]; then
+            log_debug "Found new key file: $new_keyfile"
+
+            # Check if DNSKEY is published in DNS
+            local dns_pub_info
+            local bind_informed=false
+            if check_dnskey_published "$zone" "$new_key_tag" "$DNS_SERVER"; then
+                # Key is published in DNS
+                log_debug "DNSKEY $new_key_tag is published in DNS"
+
+                # Check if DS record is at parent (registrar)
+                if check_ds_at_parent "$zone" "$new_key_tag"; then
+                    # DS is at parent, inform BIND
+                    log_debug "DS record found at parent, informing BIND..."
+
+                    # Show copy-pastable rndc command
+                    if [[ "$DEBUG" == "true" ]]; then
+                        echo "" >&2
+                        echo "# Copy-paste this command to inform BIND about DS:" >&2
+                        echo "$ rndc dnssec -checkds -key $new_key_tag published $zone" >&2
+                        echo "" >&2
+                    fi
+
+                    # Inform BIND about DS publication at registrar
+                    # Suppress output to avoid "Marked DS as published" message
+                    if rndc dnssec -checkds -key "$new_key_tag" published "$zone" >/dev/null 2>&1; then
+                        bind_informed=true
+                        log_debug "✓ BIND informed: DS for key $new_key_tag is published"
+                        dns_pub_info="✅ DNS Publication Status: PUBLISHED (verified via $DNS_SERVER)
+   ✅ DS Record Status: FOUND AT PARENT (registrar)
+   ✅ BIND has been informed that DS is published at registrar."
+                    else
+                        bind_informed=true
+                        log_debug "Executed: rndc dnssec -checkds -key $new_key_tag published $zone"
+                        dns_pub_info="✅ DNS Publication Status: PUBLISHED (verified via $DNS_SERVER)
+   ✅ DS Record Status: FOUND AT PARENT (registrar)
+   ✅ BIND has been informed that DS is published at registrar."
+                    fi
+                else
+                    # DNSKEY published but DS not yet at parent
+                    log_debug "DNSKEY published but DS not yet at parent"
+                    dns_pub_info="✅ DNS Publication Status: PUBLISHED (verified via $DNS_SERVER)
+   ⏳ DS Record Status: NOT YET AT PARENT (registrar)
+   Please add DS record at your registrar (Netcup)."
+                fi
+            else
+                # Key not yet published
+                log_rollover_detail "!" "$new_key_tag KSK not yet present in DNS (queried $DNS_SERVER)"
+                dns_pub_info="⏳ DNS Publication Status: NOT YET VISIBLE (queried $DNS_SERVER)
+   The DNSKEY record is not yet propagated. This is normal in the first minutes
+   after BIND generates the key. Check again in 5-10 minutes."
+            fi
+
+            generate_rollover_email "$zone" "$new_key_tag" "$old_key_tag" "$new_keyfile" "$old_keyfile" "$status" "$dns_pub_info" >> "$TMPFILE"
+
+            # Return 1 to indicate alert was generated (will be captured by caller)
+            return 1
+        else
+            log_error "New key file not found for key $new_key_tag"
+            log_error "Expected pattern: *${zone}*${new_key_tag}.key (with optional leading zeros)"
+            log_error "Please verify key files exist in: $KEYS_DIR"
+
+            # List available keys to help troubleshooting
+            log_error "Available key files for $zone:"
+            find "$KEYS_DIR" -name "*${zone}*.key" -exec basename {} \; 2>/dev/null | while read -r keyfile; do
+                log_error "  - $keyfile"
+            done
+
+            echo ""
+        fi
+    else
+        # new_key_tag is empty but we have key(s)
+        # This happens when a single key exists but is not active yet
+        # Show full status information with phase display
+
+        if [[ ${#keys_found[@]} -eq 1 ]]; then
+            local single_key="${keys_found[0]}"
+
+            # Get full key states
+            local published key_signing zone_signing ds_state dnskey_state
+            published=$(echo "$status" | grep -A 3 "key: $single_key" | grep "published:" | awk '{print $2}')
+            key_signing=$(echo "$status" | grep -A 4 "key: $single_key" | grep "key signing:" | awk '{print $3}')
+            zone_signing=$(echo "$status" | grep -A 5 "key: $single_key" | grep "zone signing:" | awk '{print $3}')
+            ds_state=$(echo "$status" | grep -A 20 "key: $single_key" | grep "  - ds:" | awk '{print $3}' | head -1)
+            dnskey_state=$(echo "$status" | grep -A 20 "key: $single_key" | grep "  - dnskey:" | awk '{print $3}' | head -1)
+
+            # Find key file and calculate phase
+            local keyfile
+            keyfile=$(find "$KEYS_DIR" -name "*${zone}*.key" 2>/dev/null | grep -E "\+0*${single_key}\.key$" | head -1)
+
+            if [[ -f "$keyfile" ]]; then
+                local days_since_creation
+                days_since_creation=$(calculate_days_since_creation "$keyfile")
+
+                # Determine current phase
+                local current_phase
+                current_phase=$(determine_rollover_phase "$zone" "$single_key" "$DNS_SERVER" "$days_since_creation")
+
+                # CRITICAL: Override phase based on BIND states (BIND is the truth!)
+                # If BIND says published=no, key signing=no, zone signing=no, then phases 2+ are IMPOSSIBLE
+                if [[ "$published" == "no" ]]; then
+                    # Key not even published in DNS yet
+                    if [[ "$ds_state" == "rumoured" && "$dnskey_state" == "hidden" ]]; then
+                        current_phase=0  # Pre-Phase 1 - Key exists but not yet published
+                    else
+                        current_phase=1  # Phase 1 - BIND is working on publishing
+                    fi
+                elif [[ "$published" == "yes" ]] && { [[ "$key_signing" == "no" ]] || [[ "$zone_signing" == "no" ]]; }; then
+                    # Published in DNS but not yet signing
+                    # This means we're in Phase 1 or 2 (waiting for activation)
+                    if [[ $current_phase -gt 2 ]]; then
+                        current_phase=2  # Maximum Phase 2 if not signing yet
+                    fi
+                fi
+
+                # Display header - single key setup (no old key)
+                log_action_required "$zone" "DNSSEC Key Setup for $zone in progress (key=$single_key)"
+
+                # Show visual rollover status (same as normal rollover)
+                if [[ $current_phase -ge 1 ]]; then
+                    log_rollover_detail "✓" "Phase 1: DNSKEY generated"
+                else
+                    log_rollover_detail "!" "Phase 1: DNSKEY generation (pending)"
+                    # Show why Phase 1 is pending
+                    if [[ "$published" == "no" ]]; then
+                        log_rollover_detail ">" "Key not yet published by BIND (published=no)"
+
+                        # Show Publish and Activate timestamps
+                        local publish_time activate_time inactive_time delete_time
+                        publish_time=$(grep "; Publish:" "$keyfile" | cut -d' ' -f3- | head -1)
+                        activate_time=$(grep "; Activate:" "$keyfile" | cut -d' ' -f3- | head -1)
+                        inactive_time=$(grep "; Inactive:" "$keyfile" | cut -d' ' -f3- | head -1)
+                        delete_time=$(grep "; Delete:" "$keyfile" | cut -d' ' -f3- | head -1)
+
+                        if [[ -n "$publish_time" ]]; then
+                            log_rollover_detail ">" "Publish time: $publish_time"
+                        fi
+                        if [[ -n "$activate_time" ]]; then
+                            log_rollover_detail ">" "Activate time: $activate_time"
+                        fi
+
+                        # CRITICAL: Show Inactive/Delete if set (explains why key won't activate!)
+                        if [[ -n "$inactive_time" ]]; then
+                            if [[ -t 1 ]]; then
+                                echo -e "  > ${COLOR_RED}Inactive time: $inactive_time${COLOR_RESET}" >&2
+                                echo -e "  > ${COLOR_RED}⚠ Key has Inactive timestamp - will not activate!${COLOR_RESET}" >&2
+                            else
+                                echo "  > Inactive time: $inactive_time" >&2
+                                echo "  > ⚠ Key has Inactive timestamp - will not activate!" >&2
+                            fi
+                        fi
+                        if [[ -n "$delete_time" ]]; then
+                            if [[ -t 1 ]]; then
+                                echo -e "  > ${COLOR_RED}Delete time: $delete_time${COLOR_RESET}" >&2
+                            else
+                                echo "  > Delete time: $delete_time" >&2
+                            fi
+                        fi
+
+                        # Show fix command if Inactive/Delete are set
+                        if [[ -n "$inactive_time" ]] || [[ -n "$delete_time" ]]; then
+                            echo "" >&2
+                            if [[ -t 1 ]]; then
+                                echo -e "  > ${COLOR_YELLOW}To activate this key, remove Inactive/Delete timestamps:${COLOR_RESET}" >&2
+                            else
+                                echo "  > To activate this key, remove Inactive/Delete timestamps:" >&2
+                            fi
+                            echo "  >   $ dnssec-settime -I none -D none $keyfile" >&2
+                            echo "  >   $ rndc loadkeys $zone" >&2
+                        fi
+
+                        # Check if times are in the future
+                        local current_time publish_timestamp activate_timestamp
+                        current_time=$(date +%s)
+                        if [[ -n "$publish_time" ]] && [[ -z "$inactive_time" ]]; then
+                            publish_timestamp=$(date -d "$publish_time" +%s 2>/dev/null || echo "0")
+                            if [[ $publish_timestamp -gt $current_time ]]; then
+                                local wait_seconds=$((publish_timestamp - current_time))
+                                local wait_minutes=$((wait_seconds / 60))
+                                log_rollover_detail ">" "Key will be published in $wait_minutes minutes"
+                            fi
+                        fi
+                    fi
+                fi
+
+                if [[ $current_phase -ge 2 ]]; then
+                    log_rollover_detail "✓" "Phase 2: DNSKEY propagated ($days_since_creation days)"
+                else
+                    log_rollover_detail "!" "Phase 2: DNSKEY propagation (wait $((2 - days_since_creation)) more day(s))"
+                    # Show why Phase 2 is pending
+                    if [[ "$published" == "yes" ]] && { [[ "$key_signing" == "no" ]] || [[ "$zone_signing" == "no" ]]; }; then
+                        log_rollover_detail ">" "Key published but not yet signing (key signing=$key_signing, zone signing=$zone_signing)"
+                        log_rollover_detail ">" "Waiting for BIND to activate signing (check Activate timestamp)"
+                    fi
+                fi
+
+                if [[ $current_phase -ge 3 ]]; then
+                    log_rollover_detail "✓" "Phase 3: DS updated at registrar"
+                else
+                    log_rollover_detail "!" "Phase 3: DS update at registrar (← YOU ARE HERE)"
+                fi
+
+                if [[ $current_phase -ge 4 ]]; then
+                    log_rollover_detail "✓" "Phase 4: DS propagated"
+                else
+                    log_rollover_detail "!" "Phase 4: DS propagation (waiting)"
+                fi
+
+                # Phase 5: No old key to remove (first setup)
+                log_rollover_detail "✓" "Phase 5: No old key to remove"
+
+                # Check DNS publication
+                if ! check_dnskey_published "$zone" "$single_key" "$DNS_SERVER"; then
+                    log_rollover_detail "!" "$single_key KSK not yet present in DNS (queried $DNS_SERVER)"
+                fi
+
+                # If current phase < 3, show DS record that needs to be added (DEBUG only)
+                if [[ $current_phase -lt 3 ]] && [[ "$DEBUG" == "true" ]]; then
+                    echo "" >&2
+                    log_rollover_detail ">" "Action Required: Add DS record at registrar"
+                    echo "" >&2
+
+                    # Generate and display DS record
+                    local ds_record
+                    if ds_record=$(dnssec-dsfromkey -2 "$keyfile" 2>&1); then
+                        echo "  DS Record:" >&2
+                        echo "$ds_record" | sed 's/^/    /' >&2
+                    fi
+
+                    # Also show DNSKEY record
+                    local dnskey_record
+                    dnskey_record=$(grep "^${zone}\." "$keyfile" | grep "IN DNSKEY" | normalize_dnskey_record)
+                    if [[ -n "$dnskey_record" ]]; then
+                        echo "" >&2
+                        echo "  DNSKEY Record:" >&2
+                        echo "$dnskey_record" | sed 's/^/    /' >&2
+                    fi
+
+                    echo "" >&2
+                    log_rollover_detail ">" "After adding DS at registrar, notify BIND:"
+                    log_rollover_detail ">" "  rndc dnssec -checkds -key $single_key published $zone"
+                fi
+
+                echo "" >&2
+            else
+                # Fallback if key file not found
+                if [[ -t 1 ]]; then
+                    echo -e "[${COLOR_BOLD}${COLOR_YELLOW}!${COLOR_RESET}] $zone - ${COLOR_YELLOW}Key $single_key is not fully active${COLOR_RESET}" >&2
+                else
+                    echo "[!] $zone - Key $single_key is not fully active" >&2
+                fi
+
+                echo "  Key $single_key states:" >&2
+                echo "    Published:      $published" >&2
+                echo "    Key Signing:    $key_signing" >&2
+                echo "    Zone Signing:   $zone_signing" >&2
+                echo "    DS State:       $ds_state" >&2
+                echo "    DNSKEY State:   $dnskey_state" >&2
+                echo "" >&2
+            fi
+        fi
+    fi
+
+    # Return 0 to indicate no alert
+    return 0
+}
+
+send_email_alert() {
+    local alert_count="$1"
+
+    if [[ $alert_count -eq 0 ]]; then
+        log_to_file "$(date): No rollovers - all OK"
+        return 0
+    fi
+
+    # Extract subject from email content (first line: SUBJECT: ...)
+    local subject
+    subject=$(grep "^SUBJECT:" "$TMPFILE" | head -1 | sed 's/^SUBJECT: //')
+
+    # If no subject found, use default
+    if [[ -z "$subject" ]]; then
+        subject="DNSSEC Rollover Alert - Action Required"
+    fi
+
+    # Remove SUBJECT line from email body
+    local email_body
+    email_body=$(mktemp /tmp/dnssecctl-body.XXXXXX)
+    grep -v "^SUBJECT:" "$TMPFILE" > "$email_body"
+
+    log_to_file "$(date): Sending rollover alert (Count: $alert_count)"
+    log_to_file "$(date): Subject: $subject"
+
+    if mail -s "$subject" "$EMAIL" < "$email_body"; then
+        log_to_file "$(date): Email sent successfully"
+    else
+        log_error "Failed to send email to $EMAIL"
+        log_to_file "$(date): Failed to send email"
+        rm -f "$email_body"
+        return 1
+    fi
+
+    rm -f "$email_body"
+    return 0
+}
+
+monitor_dnssec() {
+    # Log to file only
+    log_to_file "=== DNSSEC Monitoring $(date) ==="
+
+    # Show Domain Check header
+    log_monitoring "Domain Check"
+
+    # Set indentation for all subsequent log messages
+    export INDENT=""
+
+    local zones
+    zones=$(find_zones) || return 1
+
+    # Check if there are any zones to monitor
+    if [[ -z "$zones" ]]; then
+        echo "───────────────────────────────────────────────────────────────────" >&2
+        log_success "No domains to check"
+        return 0
+    fi
+
+    local total_alert_count=0
+
+    while IFS= read -r zone; do
+        # Skip system zones
+        is_zone_skippable "$zone" && continue
+
+        # Check if we should monitor this zone
+        should_monitor_zone "$zone" || continue
+
+        # Clean up orphaned keys before checking DNSSEC status
+        cleanup_orphaned_keys "$zone"
+
+        # Check DNSSEC status
+        local status
+        local has_dnssec=false
+        if status=$(check_zone_dnssec "$zone"); then
+            has_dnssec=true
+        fi
+
+        log_to_file "Checking zone: $zone"
+
+        # MODE CHECKS - Handle special modes FIRST before any status display
+        # Validation mode - just show info for the specified domain
+        if [[ "$VALIDATE_MODE" == true ]]; then
+            if [[ "$zone" == "$VALIDATE_DOMAIN" ]]; then
+                # Check if domain has DNSSEC enabled
+                if [[ "$has_dnssec" == false ]]; then
+                    log_error "Domain $zone does not have DNSSEC enabled (no dnssec-policy configured)"
+                    log_error "Cannot validate domain without DNSSEC"
+                    return 1
+                fi
+                show_validation_info "$zone" "$status"
+                return 0
+            fi
+            # Skip other domains when in validate mode
+            continue
+        fi
+
+        # Print keys mode - display all DS and DNSKEY records
+        if [[ "$PRINTKEYS_MODE" == true ]]; then
+            if [[ "$zone" == "$PRINTKEYS_DOMAIN" ]]; then
+                # Warn if domain doesn't have DNSSEC, but still execute
+                if [[ "$has_dnssec" == false ]]; then
+                    log_warning "Domain $zone does not have DNSSEC enabled (no dnssec-policy configured)"
+                    log_warning "There may be no keys to display"
+                    echo ""
+                fi
+                if print_keys "$zone"; then
+                    log_success "Keys displayed successfully"
+                    return 0
+                else
+                    log_error "Failed to display keys"
+                    return 1
+                fi
+            fi
+            # Skip other domains when in printkeys mode
+            continue
+        fi
+
+        # Abort rollover mode - actually abort the rollover
+        if [[ "$ABORT_ROLLOVER_MODE" == true ]]; then
+            if [[ "$zone" == "$ABORT_ROLLOVER_DOMAIN" ]]; then
+                # Check if domain has DNSSEC enabled
+                if [[ "$has_dnssec" == false ]]; then
+                    log_error "Domain $zone does not have DNSSEC enabled (no dnssec-policy configured)"
+                    log_error "Cannot abort rollover for domain without DNSSEC"
+                    return 1
+                fi
+                if abort_rollover "$zone" "$status"; then
+                    log_success "Rollover aborted successfully"
+                    return 0
+                else
+                    log_error "Failed to abort rollover"
+                    return 1
+                fi
+            fi
+            # Skip other domains when in abort-rollover mode
+            continue
+        fi
+
+        # Initiate rollover mode - start a new KSK rollover
+        if [[ "$INITIATE_ROLLOVER_MODE" == true ]]; then
+            if [[ "$zone" == "$INITIATE_ROLLOVER_DOMAIN" ]]; then
+                # Check if domain has DNSSEC enabled
+                if [[ "$has_dnssec" == false ]]; then
+                    log_error "Domain $zone does not have DNSSEC enabled (no dnssec-policy configured)"
+                    log_error "Cannot initiate rollover for domain without DNSSEC"
+                    return 1
+                fi
+                if initiate_rollover "$zone" "$status"; then
+                    log_success "Rollover initiated successfully"
+                    return 0
+                else
+                    log_error "Failed to initiate rollover"
+                    return 1
+                fi
+            fi
+            # Skip other domains when in initiate-rollover mode
+            continue
+        fi
+
+        # Force rollover mode - force Phase 5 completion
+        if [[ "$FORCE_ROLLOVER_MODE" == true ]]; then
+            if [[ "$zone" == "$FORCE_ROLLOVER_DOMAIN" ]]; then
+                # Check if domain has DNSSEC enabled
+                if [[ "$has_dnssec" == false ]]; then
+                    log_error "Domain $zone does not have DNSSEC enabled (no dnssec-policy configured)"
+                    log_error "Cannot force rollover for domain without DNSSEC"
+                    return 1
+                fi
+                if force_rollover "$zone" "$status"; then
+                    log_success "Phase 5 forced successfully"
+                    return 0
+                else
+                    log_error "Failed to force Phase 5"
+                    return 1
+                fi
+            fi
+            # Skip other domains when in force-rollover mode
+            continue
+        fi
+
+        # If --all flag: Show status for every domain
+        if [[ "$ALL_DOMAINS" == true ]]; then
+            if [[ "$has_dnssec" == false ]]; then
+                log_dnssec_inactive "$zone"
+                continue
+            else
+                # Check if there's a rollover in progress (multiple keys = rollover)
+                local needs_rollover=false
+                local key_count
+                key_count=$(echo "$status" | grep -cE '^key:.*KSK|^key:.*CSK' || true)
+
+                if [[ $key_count -gt 1 ]]; then
+                    needs_rollover=true
+                elif [[ $key_count -eq 1 ]]; then
+                    # Single key - check if it's ACTIVE
+                    local is_published is_key_signing is_zone_signing
+                    is_published=$(echo "$status" | grep "published:" | awk '{print $2}' | head -1)
+                    is_key_signing=$(echo "$status" | grep "key signing:" | awk '{print $3}' | head -1)
+                    is_zone_signing=$(echo "$status" | grep "zone signing:" | awk '{print $3}' | head -1)
+
+                    # If key is NOT fully active, show status details (not just green checkmark)
+                    if [[ "$is_published" != "yes" ]] || [[ "$is_key_signing" != "yes" ]] || [[ "$is_zone_signing" != "yes" ]]; then
+                        needs_rollover=true  # Will show full status display
+                    fi
+                fi
+
+                if [[ "$needs_rollover" == false ]]; then
+                    log_dnssec_active "$zone" "$status"
+                    continue
+                fi
+                # If rollover needed OR key inactive, continue with normal processing below
+            fi
+        else
+            # Not --all mode
+            if [[ "$has_dnssec" == false ]]; then
+                # If domain was explicitly specified by user, show it even if INACTIVE
+                if [[ ${#MONITORED_DOMAINS[@]} -gt 0 ]]; then
+                    log_dnssec_inactive "$zone"
+                fi
+                continue
+            else
+                # Domain has DNSSEC - check if rollover in progress (multiple keys)
+                local needs_rollover=false
+                local key_count
+                key_count=$(echo "$status" | grep -cE '^key:.*KSK|^key:.*CSK' || true)
+
+                if [[ $key_count -gt 1 ]]; then
+                    needs_rollover=true
+                elif [[ $key_count -eq 1 ]]; then
+                    # Single key - check if it's ACTIVE
+                    local is_published is_key_signing is_zone_signing
+                    is_published=$(echo "$status" | grep "published:" | awk '{print $2}' | head -1)
+                    is_key_signing=$(echo "$status" | grep "key signing:" | awk '{print $3}' | head -1)
+                    is_zone_signing=$(echo "$status" | grep "zone signing:" | awk '{print $3}' | head -1)
+
+                    # If key is NOT fully active, show status details (not just green checkmark)
+                    if [[ "$is_published" != "yes" ]] || [[ "$is_key_signing" != "yes" ]] || [[ "$is_zone_signing" != "yes" ]]; then
+                        needs_rollover=true  # Will show full status display
+                    fi
+                fi
+
+                # If no rollover needed AND domain was explicitly specified, show it as active
+                if [[ "$needs_rollover" == false ]] && [[ ${#MONITORED_DOMAINS[@]} -gt 0 ]]; then
+                    log_dnssec_active "$zone" "$status"
+                    continue
+                fi
+                # If rollover needed OR key inactive, continue with normal processing below
+            fi
+        fi
+
+        # Process keys and check for rollovers
+        # FIXED: Capture return value correctly - function returns 1 if alert generated
+        if ! process_zone_keys "$zone" "$status"; then
+            # Function returned non-zero (1), which means an alert was generated
+            ((total_alert_count++))
+        fi
+
+    done <<< "$zones"
+
+    # Send email if alerts generated
+    send_email_alert "$total_alert_count"
+
+    log_to_file "=== Monitoring completed ==="
+    log_to_file ""
+
+    # Reset indentation
+    unset INDENT
+
+    return 0
+}
+
+# ============================================================================
+# Cleanup
+# ============================================================================
+
+cleanup() {
+    if [[ -f "$TMPFILE" ]]; then
+        rm -f "$TMPFILE"
+        log_debug "Cleaned up temporary file: $TMPFILE"
+    fi
+
+    # Clean up any leftover email body files
+    rm -f /tmp/dnssecctl-body.* 2>/dev/null || true
+}
+
+# ============================================================================
+# Main Function
+# ============================================================================
+
+main() {
+    # Load configuration
+    load_all_configs || exit 4
+
+    # Parse command line arguments
+    parse_arguments "$@"
+
+    # If no domains specified for monitoring and not in special mode, show help
+    # Exception: -all flag means monitor all BIND zones (MONITORED_DOMAINS is intentionally empty)
+    if [[ ${#MONITORED_DOMAINS[@]} -eq 0 ]] && \
+       [[ "$ALL_DOMAINS" == "false" ]] && \
+       [[ "$PRINTKEYS_MODE" == "false" ]] && \
+       [[ "$VALIDATE_MODE" == "false" ]] && \
+       [[ "$ABORT_ROLLOVER_MODE" == "false" ]] && \
+       [[ "$INITIATE_ROLLOVER_MODE" == "false" ]] && \
+       [[ "$FORCE_ROLLOVER_MODE" == "false" ]]; then
+        show_usage
+        exit 2
+    fi
+
+    # Check dependencies
+    check_dependencies
+
+    # Validate configuration
+    validate_configuration || exit 4
+
+    # Run monitoring
+    monitor_dnssec || exit 1
+}
+
+# Execute main function with all arguments
+main "$@"
