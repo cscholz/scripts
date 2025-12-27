@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20251010.01
+# Version=20251227.08
 # Wrapper to manage dns zones
 set -euo pipefail
 
@@ -111,6 +111,23 @@ print_aligned() {
   printf "%-15s %s\n" "$key:" "$value"
 }
 
+# --- Extract TLD robustly (handles .co.uk, .com, etc.) ---
+extract_tld() {
+    local domain="$1"
+    # Remove trailing dot if present
+    domain="${domain%.}"
+    
+    # Known two-part TLDs (extend as needed)
+    local two_part_tlds="co.uk|org.uk|ac.uk|gov.uk|com.au|co.nz|co.za"
+    
+    if [[ "$domain" =~ \.($two_part_tlds)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        # Single-part TLD (last segment)
+        echo "${domain##*.}"
+    fi
+}
+
 # --- Usage (original + only -i added) ---
 usage() {
   echo -e "\033[1;4m1. Usage:\033[0m"
@@ -148,6 +165,13 @@ usage() {
   echo "   del <Record Name> <Zone>                 Delete a DNS record"
   echo "   check <Record Name> <Zone>               Show DNS record and TXT record for a name"
   echo
+  echo "   # Zone Health Checks"
+  echo "   validate-dnssec <Zone>                   Validate DNSSEC chain (Root → TLD → Zone → Records)"
+  echo "   check-serials <Zone>                     Check serial consistency across all NS/SOA servers"
+  echo "   check-latency <Zone>                     Measure DNS response latency for all NS servers (5 queries each)"
+  echo "   check-delegation <Zone>                  Compare NS records (Parent zone ↔ Zone) and verify reachability"
+  echo "   check-glue <Zone>                        Show glue records (A/AAAA) from parent zone"
+  echo
   echo -e "\033[1;4m5a. Zone Parameter:\033[0m"
   echo "   For soa-set and subcommands:"
   echo "     primary      Primary nameserver for the zone (default: ns1.<zone>.)"
@@ -164,6 +188,9 @@ usage() {
   echo "   3) \$ ${SCRIPT_NAME} soa-set-serial example.com 2024062502"
   echo "   4) \$ ${SCRIPT_NAME} soa-set-refresh example.com 7200"
   echo "   5) \$ ${SCRIPT_NAME} listzone example.com"
+  echo "   6) \$ ${SCRIPT_NAME} validate-dnssec example.com"
+  echo "   7) \$ ${SCRIPT_NAME} check-serials example.com"
+  echo "   8) \$ ${SCRIPT_NAME} check-delegation example.com"
   echo
   echo -e "\033[1;4m6a. Record Parameter:\033[0m"
   echo "   -dns-server <server>      DNS server to use (default from config)"
@@ -196,7 +223,509 @@ usage() {
   echo
 }
 
-# --- DIG / NSUPDATE wrappers ---
+# ============================================================================
+# Zone Health Check Functions
+# ============================================================================
+
+validate_dnssec() {
+    checkpackage delv bind9-dnsutils
+    local zone="$1"
+    
+    echo "DNSSEC Validation for: ${zone}"
+    echo "=========================================="
+    echo ""
+    
+    # Use delv to validate DNSSEC chain
+    debug_msg delv @127.0.0.1 +yaml "$zone"
+    
+    local output
+    output=$(delv @127.0.0.1 +yaml "$zone" 2>&1 || true)
+    
+    # Colorize output for better readability
+    echo "$output" | sed \
+        -e "s,fully_validated,${GREEN}&${NC},g" \
+        -e "s,unsigned_answer,${YELLOW}&${NC},g" \
+        -e "s,negative_response_fully_validated,${RED}&${NC},g" \
+        -e "s,validation_failed,${RED}&${NC},g" \
+        -e "s,success,${GREEN}&${NC},g" \
+        -e "s,nxdomain,${RED}&${NC},g" \
+        -e "s,insecure,${YELLOW}&${NC},g"
+    
+    echo ""
+    echo "=========================================="
+    
+    # Summary check
+    if echo "$output" | grep -q "fully_validated"; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] DNSSEC validation successful" 1
+    elif echo "$output" | grep -q "unsigned_answer"; then
+        log_status "[${YELLOW}!${NC}] Zone is not signed with DNSSEC" 1
+    else
+        log_status "[${RED}${CROSSMARK}${NC}] DNSSEC validation failed" 1
+    fi
+}
+
+check_serials() {
+    checkpackage dig dnsutils
+    local zone="$1"
+    
+    echo "Serial Consistency Check for: ${zone}"
+    echo "=========================================="
+    echo ""
+    
+    local highest_serial=0
+    local serial_mismatches=0
+    local has_cname_ns=0
+    declare -A serial_map
+    declare -A time_map
+    declare -A type_map
+    
+    # Get all NS servers
+    local ns_servers
+    ns_servers=$(dig +short NS "$zone" @127.0.0.1 2>/dev/null | sed 's/\.$//' || true)
+    
+    if [[ -z "$ns_servers" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] No NS records found for zone ${zone}" 1
+        return 1
+    fi
+    
+    # Get SOA primary server
+    local soa_primary
+    soa_primary=$(dig +short SOA "$zone" @127.0.0.1 2>/dev/null | awk '{print $1}' | sed 's/\.$//' || true)
+    
+    # Collect all servers to check (NS + SOA primary)
+    local all_servers
+    all_servers=$(echo -e "$ns_servers\n$soa_primary" | sort -u | grep -v '^$')
+    
+    # First pass: collect all serials and find highest
+    echo "Querying servers..."
+    for server in $all_servers; do
+        # Check if server is a CNAME (not recommended for NS)
+        local cname_check
+        cname_check=$(dig +short CNAME "$server" @127.0.0.1 2>/dev/null || true)
+        if [[ -n "$cname_check" ]]; then
+            has_cname_ns=1
+        fi
+        
+        # Query for SOA to get serial
+        debug_msg dig +time=6 SOA "$zone" @"$server"
+        local dig_output
+        dig_output=$(dig +time=6 SOA "$zone" @"$server" 2>/dev/null || true)
+        
+        local serial
+        serial=$(echo "$dig_output" | grep -v ';' | grep SOA | grep -v 'NSEC' | head -n1 | awk '{print $7}')
+        
+        local query_time
+        query_time=$(echo "$dig_output" | grep 'Query time:' | awk '{print $4 " " $5}')
+        
+        # Determine if this is NS or SOA server
+        local server_type="NS "
+        if [[ "$server" == "$soa_primary" ]]; then
+            server_type="SOA"
+        fi
+        
+        # Store results
+        if [[ -n "$serial" && "$serial" -gt 0 ]]; then
+            serial_map["$server"]="$serial"
+            time_map["$server"]="$query_time"
+            type_map["$server"]="$server_type"
+            
+            if [[ "$serial" -gt "$highest_serial" ]]; then
+                highest_serial="$serial"
+            fi
+        else
+            serial_map["$server"]="0"
+            time_map["$server"]="n/a"
+            type_map["$server"]="$server_type"
+        fi
+    done
+    
+    echo ""
+    echo "Results:"
+    echo "----------------------------------------"
+    printf "%-12s  %-12s  %-4s  %-40s  %s\n" "Serial" "Query Time" "Type" "Server" "Status"
+    echo "----------------------------------------"
+    
+    # Second pass: display results (show NS and SOA separately if server is both)
+    for server in $all_servers; do
+        local serial="${serial_map[$server]}"
+        local query_time="${time_map[$server]}"
+        local is_ns=0
+        local is_soa=0
+        
+        # Check if server is NS
+        if echo "$ns_servers" | grep -qx "$server"; then
+            is_ns=1
+        fi
+        
+        # Check if server is SOA primary
+        if [[ "$server" == "$soa_primary" ]]; then
+            is_soa=1
+        fi
+        
+        # Output for SOA first (if applicable)
+        if [[ "$is_soa" -eq 1 ]]; then
+            if [[ "$serial" == "0" ]]; then
+                printf "%-12s  %-12s  %-4s  %-40s  " "n/a" "$query_time" "SOA" "$server"
+                echo -e "${RED}(unreachable)${NC}"
+                serial_mismatches=$((serial_mismatches + 1))
+            elif [[ "$serial" -lt "$highest_serial" ]]; then
+                printf "%-12s  %-12s  %-4s  %-40s  " "$serial" "$query_time" "SOA" "$server"
+                echo -e "${RED}(outdated)${NC}"
+                serial_mismatches=$((serial_mismatches + 1))
+            else
+                printf "%-12s  %-12s  %-4s  %-40s  " "$serial" "$query_time" "SOA" "$server"
+                echo -e "${GREEN}(ok)${NC}"
+            fi
+        fi
+        
+        # Output for NS (if applicable)
+        if [[ "$is_ns" -eq 1 ]]; then
+            if [[ "$serial" == "0" ]]; then
+                printf "%-12s  %-12s  %-4s  %-40s  " "n/a" "$query_time" "NS " "$server"
+                echo -e "${RED}(unreachable)${NC}"
+                # Only increment once per server
+                if [[ "$is_soa" -ne 1 ]]; then
+                    serial_mismatches=$((serial_mismatches + 1))
+                fi
+            elif [[ "$serial" -lt "$highest_serial" ]]; then
+                printf "%-12s  %-12s  %-4s  %-40s  " "$serial" "$query_time" "NS " "$server"
+                echo -e "${RED}(outdated)${NC}"
+                if [[ "$is_soa" -ne 1 ]]; then
+                    serial_mismatches=$((serial_mismatches + 1))
+                fi
+            else
+                printf "%-12s  %-12s  %-4s  %-40s  " "$serial" "$query_time" "NS " "$server"
+                echo -e "${GREEN}(ok)${NC}"
+            fi
+        fi
+    done
+    
+    echo "----------------------------------------"
+    echo ""
+    
+    # Summary
+    if [[ "$serial_mismatches" -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] All nameservers have the same serial: $highest_serial" 1
+    else
+        log_status "[${RED}${CROSSMARK}${NC}] Serial mismatch detected! $serial_mismatches server(s) outdated" 1
+    fi
+    
+    if [[ "$has_cname_ns" -eq 1 ]]; then
+        log_status "[${YELLOW}!${NC}] Warning: One or more NS records point to a CNAME (not recommended)" 1
+    fi
+}
+
+check_latency() {
+    checkpackage dig dnsutils
+    local zone="$1"
+    local iterations=5
+    
+    echo "DNS Latency Check for: ${zone}"
+    echo "=========================================="
+    echo ""
+    
+    # Get all NS servers
+    local ns_servers
+    ns_servers=$(dig +short NS "$zone" @127.0.0.1 2>/dev/null | sed 's/\.$//' || true)
+    
+    if [[ -z "$ns_servers" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] No NS records found for zone ${zone}" 1
+        return 1
+    fi
+    
+    declare -A latency_results
+    
+    echo "Measuring latency (${iterations} queries per server)..."
+    echo ""
+    
+    # Process each server
+    local server_count=0
+    local total_servers=$(echo "$ns_servers" | wc -l)
+    
+    for server in $ns_servers; do
+        server_count=$((server_count + 1))
+        echo "[$server_count/$total_servers] ${server}"
+        
+        local total_time=0
+        local successful_queries=0
+        local min_time=999999
+        local max_time=0
+        
+        for ((i=1; i<=iterations; i++)); do
+            # Direct dig call with reasonable timeout (no background process)
+            debug_msg dig +time=5 +tries=1 +retry=0 SOA "$zone" @"$server"
+            
+            local dig_output
+            dig_output=$(dig +time=5 +tries=1 +retry=0 SOA "$zone" @"$server" 2>&1 || true)
+            
+            # Debug: show full output if debug mode enabled
+            if [[ "$debug" == "1" ]]; then
+                echo "=== DIG OUTPUT ===" >&2
+                echo "$dig_output" >&2
+                echo "=================" >&2
+            fi
+            
+            # Parse query time - try multiple patterns for robustness
+            local query_time=""
+            
+            # Method 1: Standard "Query time:" pattern (most common)
+            if [[ -z "$query_time" ]]; then
+                query_time=$(echo "$dig_output" | grep -i 'Query time:' | head -n1 | awk '{print $4}' | tr -d '\r\n' || echo "")
+            fi
+            
+            # Method 2: Try with sed extraction
+            if [[ -z "$query_time" ]]; then
+                query_time=$(echo "$dig_output" | sed -n 's/.*Query time: *\([0-9]*\).*/\1/ip' | head -n1 || echo "")
+            fi
+            
+            # Method 3: Try looking for msec pattern
+            if [[ -z "$query_time" ]]; then
+                query_time=$(echo "$dig_output" | grep -i 'msec' | grep -oE '[0-9]+' | head -n1 || echo "")
+            fi
+            
+            # Debug: show extracted time
+            if [[ "$debug" == "1" ]]; then
+                echo "Extracted query_time: [$query_time]" >&2
+            fi
+            
+            # Validate: must be a non-negative integer (0 is valid for cached/fast responses)
+            if [[ -n "$query_time" ]] && [[ "$query_time" =~ ^[0-9]+$ ]]; then
+                total_time=$((total_time + query_time))
+                successful_queries=$((successful_queries + 1))
+                
+                if [[ "$query_time" -lt "$min_time" ]]; then
+                    min_time="$query_time"
+                fi
+                
+                if [[ "$query_time" -gt "$max_time" ]]; then
+                    max_time="$query_time"
+                fi
+                
+                if [[ "$debug" == "1" ]]; then
+                    echo "SUCCESS: Recorded ${query_time}ms" >&2
+                fi
+            else
+                if [[ "$debug" == "1" ]]; then
+                    echo "FAILED: Could not parse valid query time" >&2
+                fi
+            fi
+            
+            # Small delay between queries to same server
+            sleep 0.2
+        done
+        
+        # Store results
+        if [[ "$successful_queries" -gt 0 ]]; then
+            local avg_time=$((total_time / successful_queries))
+            latency_results["$server"]="${min_time}|${max_time}|${avg_time}|${successful_queries}"
+        else
+            latency_results["$server"]="0|0|0|0"
+        fi
+    done
+    
+    echo ""
+    echo "Results:"
+    echo "--------------------------------------------------------"
+    printf "%-40s  %8s  %8s  %8s  %s\n" "Server" "Min (ms)" "Max (ms)" "Avg (ms)" "Success"
+    echo "--------------------------------------------------------"
+    
+    # Sort by average latency (failed servers at end)
+    for server in $(for s in $ns_servers; do
+        local data="${latency_results[$s]}"
+        local avg=$(echo "$data" | cut -d'|' -f3)
+        # Put failed servers (avg=0) at the end
+        if [[ "$avg" -eq 0 ]]; then
+            avg=999999
+        fi
+        echo "$avg $s"
+    done | sort -n | awk '{print $2}'); do
+        
+        local data="${latency_results[$server]}"
+        local min=$(echo "$data" | cut -d'|' -f1)
+        local max=$(echo "$data" | cut -d'|' -f2)
+        local avg=$(echo "$data" | cut -d'|' -f3)
+        local success=$(echo "$data" | cut -d'|' -f4)
+        
+        # Fix min value for display
+        if [[ "$min" -eq 999999 ]]; then
+            min=0
+        fi
+        
+        # Output with color-coded success rate
+        if [[ "$success" -eq "$iterations" ]]; then
+            printf "%-40s  %8s  %8s  %8s  " "$server" "$min" "$max" "$avg"
+            echo -e "${GREEN}${success}/${iterations}${NC}"
+        elif [[ "$success" -gt 0 ]]; then
+            printf "%-40s  %8s  %8s  %8s  " "$server" "$min" "$max" "$avg"
+            echo -e "${YELLOW}${success}/${iterations}${NC}"
+        else
+            printf "%-40s  %8s  %8s  %8s  " "$server" "n/a" "n/a" "n/a"
+            echo -e "${RED}${success}/${iterations}${NC}"
+        fi
+    done
+    
+    echo "--------------------------------------------------------"
+}
+
+check_delegation() {
+    checkpackage dig dnsutils
+    local zone="$1"
+    
+    echo "Delegation Check for: ${zone}"
+    echo "=========================================="
+    echo ""
+    
+    # Extract TLD robustly
+    local tld
+    tld=$(extract_tld "$zone")
+    
+    # Get root/parent NS for TLD
+    local parent_ns
+    parent_ns=$(dig +short NS "$tld" @127.0.0.1 2>/dev/null | head -n1 | sed 's/\.$//' || true)
+    
+    if [[ -z "$parent_ns" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Could not find parent nameserver for TLD: ${tld}" 1
+        return 1
+    fi
+    
+    echo "Parent zone NS: ${parent_ns}"
+    echo ""
+    
+    # Get NS records from parent zone
+    debug_msg dig +time=6 NS "$zone" @"$parent_ns"
+    local parent_ns_records
+    parent_ns_records=$(dig +time=6 NS "$zone" @"$parent_ns" 2>/dev/null | grep -v ';' | grep NS | awk '{print $5}' | sed 's/\.$//' | sort || true)
+    
+    local parent_count
+    parent_count=$(echo "$parent_ns_records" | grep -c '^' || echo "0")
+    
+    # Get NS records from zone itself
+    debug_msg dig +time=6 +short NS "$zone" @127.0.0.1
+    local zone_ns_records
+    zone_ns_records=$(dig +time=6 +short NS "$zone" @127.0.0.1 2>/dev/null | sed 's/\.$//' | sort || true)
+    
+    local zone_count
+    zone_count=$(echo "$zone_ns_records" | grep -c '^' || echo "0")
+    
+    # Compare counts
+    echo "Comparing NS Records:"
+    echo "----------------------------------------"
+    
+    if [[ "$parent_count" -eq "$zone_count" ]] && diff <(echo "$parent_ns_records") <(echo "$zone_ns_records") >/dev/null 2>&1; then
+        echo -e "${GREEN}Parent NS Records ($parent_count):${NC}"
+        echo "$parent_ns_records" | while read -r ns; do echo "  - $ns"; done
+        echo ""
+        echo -e "${GREEN}Zone NS Records ($zone_count):${NC}"
+        echo "$zone_ns_records" | while read -r ns; do echo "  - $ns"; done
+        echo ""
+        log_status "[${GREEN}${CHECKMARK}${NC}] NS records match between parent and zone" 1
+    else
+        echo -e "${RED}Parent NS Records ($parent_count):${NC}"
+        echo "$parent_ns_records" | while read -r ns; do echo "  - $ns"; done
+        echo ""
+        echo -e "${RED}Zone NS Records ($zone_count):${NC}"
+        echo "$zone_ns_records" | while read -r ns; do echo "  - $ns"; done
+        echo ""
+        log_status "[${RED}${CROSSMARK}${NC}] NS record mismatch between parent and zone!" 1
+    fi
+    
+    echo ""
+    echo "Checking NS Reachability:"
+    echo "----------------------------------------"
+    
+    # Check if NS servers are reachable
+    for ns in $zone_ns_records; do
+        debug_msg dig +time=3 +short A "$ns"
+        local ip
+        ip=$(dig +time=3 +short A "$ns" 2>/dev/null | head -n1 || true)
+        
+        if [[ -n "$ip" ]]; then
+            # Try to query the NS
+            debug_msg dig +time=3 SOA "$zone" @"$ns"
+            if dig +time=3 SOA "$zone" @"$ns" >/dev/null 2>&1; then
+                echo -e "  ${GREEN}${CHECKMARK}${NC} ${ns} (${ip}) - reachable"
+            else
+                echo -e "  ${RED}${CROSSMARK}${NC} ${ns} (${ip}) - not responding"
+            fi
+        else
+            echo -e "  ${RED}${CROSSMARK}${NC} ${ns} - no A record found"
+        fi
+    done
+}
+
+check_glue() {
+    checkpackage dig dnsutils
+    local zone="$1"
+    
+    echo "Glue Record Check for: ${zone}"
+    echo "=========================================="
+    echo ""
+    
+    # Extract TLD robustly
+    local tld
+    tld=$(extract_tld "$zone")
+    
+    # Get root/parent NS for TLD
+    local parent_ns
+    parent_ns=$(dig +short NS "$tld" @127.0.0.1 2>/dev/null | head -n1 | sed 's/\.$//' || true)
+    
+    if [[ -z "$parent_ns" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Could not find parent nameserver for TLD: ${tld}" 1
+        return 1
+    fi
+    
+    echo "Querying parent NS: ${parent_ns}"
+    echo ""
+    
+    # Get glue records from parent zone (A and AAAA in additional section)
+    debug_msg dig +time=6 NS "$zone" @"$parent_ns"
+    local glue_output
+    glue_output=$(dig +time=6 NS "$zone" @"$parent_ns" 2>/dev/null || true)
+    
+    local glue_records
+    glue_records=$(echo "$glue_output" | grep -v ';' | grep -E '\sA\s|\sAAAA\s' | awk '{print $1 " " $4 " " $5}' || true)
+    
+    if [[ -n "$glue_records" ]]; then
+        echo "Glue Records Found:"
+        echo "----------------------------------------"
+        echo "$glue_records" | while read -r name type value; do
+            if [[ "$type" == "A" ]]; then
+                echo -e "  ${GREEN}${name}${NC} → ${type} ${value}"
+            elif [[ "$type" == "AAAA" ]]; then
+                echo -e "  ${GREEN}${name}${NC} → ${type} ${value}"
+            fi
+        done
+        echo ""
+        log_status "[${GREEN}${CHECKMARK}${NC}] Glue records present in parent zone" 1
+    else
+        echo -e "${YELLOW}No glue records found in parent zone${NC}"
+        echo ""
+        
+        # Check if glue records are needed
+        local ns_servers
+        ns_servers=$(dig +short NS "$zone" @127.0.0.1 2>/dev/null | sed 's/\.$//' || true)
+        
+        local needs_glue=0
+        for ns in $ns_servers; do
+            # Check if NS is within the zone (requires glue)
+            if [[ "$ns" == *"${zone}"* ]]; then
+                needs_glue=1
+                echo -e "  ${YELLOW}!${NC} ${ns} is within zone ${zone} - glue record recommended"
+            fi
+        done
+        
+        if [[ "$needs_glue" -eq 1 ]]; then
+            log_status "[${YELLOW}!${NC}] Warning: NS servers within zone require glue records!" 1
+        else
+            log_status "[${GREEN}${CHECKMARK}${NC}] No glue records needed (all NS servers outside zone)" 1
+        fi
+    fi
+}
+
+# ============================================================================
+# Original Functions (unchanged)
+# ============================================================================
+
 get_zone_soa() {
     local zone="$1"
     local server="${dns_server}"
@@ -838,18 +1367,23 @@ main() {
   fi
 
   case "$action" in
-    add)              dns_add_update "$record" "$zone" ;;
-    del)              dns_del_record "$record" "$zone" ;;
-    check)            check_record "$record" "$zone" ;;
-    soa-get)          get_zone_soa "$record" ;;
-    soa-set)          set_zone_soa "$record" "$zone" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
-    soa-set-serial)   set_zone_soa_serial "$record" "$zone" ;;
-    soa-set-refresh)  set_zone_soa_refresh "$record" "$zone" ;;
-    soa-set-retry)    set_zone_soa_retry "$record" "$zone" ;;
-    soa-set-expire)   set_zone_soa_expire "$record" "$zone" ;;
-    soa-set-minimum)  set_zone_soa_minimum "$record" "$zone" ;;
-    listzone)         list_zone "$record" ;;
-    listzone_full)    list_zone_full "$record" ;;
+    add)                dns_add_update "$record" "$zone" ;;
+    del)                dns_del_record "$record" "$zone" ;;
+    check)              check_record "$record" "$zone" ;;
+    soa-get)            get_zone_soa "$record" ;;
+    soa-set)            set_zone_soa "$record" "$zone" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
+    soa-set-serial)     set_zone_soa_serial "$record" "$zone" ;;
+    soa-set-refresh)    set_zone_soa_refresh "$record" "$zone" ;;
+    soa-set-retry)      set_zone_soa_retry "$record" "$zone" ;;
+    soa-set-expire)     set_zone_soa_expire "$record" "$zone" ;;
+    soa-set-minimum)    set_zone_soa_minimum "$record" "$zone" ;;
+    listzone)           list_zone "$record" ;;
+    listzone_full)      list_zone_full "$record" ;;
+    validate-dnssec)    validate_dnssec "$record" ;;
+    check-serials)      check_serials "$record" ;;
+    check-latency)      check_latency "$record" ;;
+    check-delegation)   check_delegation "$record" ;;
+    check-glue)         check_glue "$record" ;;
     *)
       usage
       exit 1
