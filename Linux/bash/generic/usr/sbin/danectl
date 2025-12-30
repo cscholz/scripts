@@ -1,6 +1,6 @@
 #!/bin/bash
-# Version=20251009.12
-# Manage DNS DANE records (create, check, write to zone)
+# Version=20251230.04
+# Manage DNS DANE records (create, check, write to zone, or update via nsupdate)
 
 #====================[ formatting ]====================
 RED=$'\033[0;31m'
@@ -77,7 +77,7 @@ run_self_update() {
 
     echo "Performing self-update"
 
-    # Download latest version
+    # Download latest version (follow redirects, fail on HTTP errors)
     echo -ne "\r[ ] Downloading latest version..."
     if ! curl -fsSL --retry 3 --output "${script_name}.tmp" "${update_base}${self}"; then
         echo -e "\r[${RED}✗${NC}] Downloading latest version"
@@ -99,14 +99,15 @@ run_self_update() {
     fi
     echo -e "\r[${GREEN}✓${NC}] Copying over modes from old version"
 
-    # Replace atomically via helper (ARGS: <target> <tmpfile>)
+    # Replace atomically via small helper
     echo -ne "\r[ ] Start update process..."
     cat > updateScript.sh <<'EOF'
 #!/bin/bash
 set -e
-target="$1"
-tmp="$2"
-if mv "$tmp" "$target"; then
+target="$(realpath "$0" 2>/dev/null || echo "$0")"
+name="$(basename "$target")"
+dir="$(dirname "$target")"
+if mv "${dir}/${name}.tmp" "${target}"; then
     printf "\r\033[0KUpdate complete.\n"
     rm -f "$0"
 else
@@ -115,7 +116,7 @@ else
 fi
 EOF
     chmod +x updateScript.sh
-    exec /bin/bash updateScript.sh "$script_path" "${script_name}.tmp"
+    exec /bin/bash updateScript.sh
     # not reached
 }
 
@@ -180,40 +181,64 @@ print_help() {
 ${BOLD}DANE TLSA generator for SMTP certificates${NOBOLD}
 
 Usage:
-  ${SCRIPT_NAME} -s <smtp_host> -p <port[,port2,...]> [-t <ttl>] [-f|-h] [-c] [-zone <file>] [-cmd "<command>"] [-u] [-v] [-?]
+  ${SCRIPT_NAME} -s <smtp_host> -p <port[,port2,...]> [-t <ttl>] [-f|-H] [-c] [-zone <file>] [-n <zone>] [-cmd "<command>"] [-u] [-v] [-?]
 
 Options:
-  -s       SMTP server hostname (used for TLS SNI)
-  -p       Port(s): single or comma-separated (e.g. 25,465,587)
-  -t       TTL in seconds (default: 60)
-  -f       Use full owner (_<port>._tcp.<host>.) WITH trailing dot (FQDN)
-  -h       Use short host label only in owner (_<port>._tcp.<hostlabel>) WITHOUT dot
-  -c       Check mode: compare generated TLSA digests with DNS TLSA records
-  -zone    Path to zone file to update (BIND zone update mode; not allowed together with -c)
-  -cmd     Post-processing command to run after zone update (e.g. signer/reload)
-  -u       Self-update from HTTP. Requires UPDATE_BASE in config (global or user).
-  -v       Debug (verbose command echo)
-  -?       Show this help and exit
+  -s           SMTP server hostname (used for TLS SNI)
+  -p           Port(s): single or comma-separated (e.g. 25,465,587)
+  -t           TTL in seconds (default: 60)
+  -f           Use full owner (_<port>._tcp.<host>.) WITH trailing dot (FQDN)
+  -H           Use short host label only in owner (_<port>._tcp.<hostlabel>) WITHOUT dot
+  -c           Check mode: compare generated TLSA digests with DNS TLSA records
+  -zone <file> Write records directly to BIND zone file (not allowed together with -c or -n)
+  -n <zone>    Write records via nsupdate to DNS server (requires -H; not allowed with -c or -zone)
+               Requires NSUPDATE_SERVER in config
+  -cmd         Post-processing command to run after zone/nsupdate update (e.g. signer/reload)
+  -u           Self-update from HTTP. Requires UPDATE_BASE in config (global or user).
+  -v           Debug (verbose command echo)
+  -?           Show this help and exit
+
+Config variables (in ${GLOBAL_CONFIG} or ${USER_CONFIG}):
+  For -n (nsupdate) mode:
+    NSUPDATE_SERVER     DNS server to send updates to (required, e.g., localhost or 127.0.0.1)
+    NSUPDATE_KEY_FILE   Path to TSIG key file (optional, for authenticated updates)
+  
+  For self-update (-u):
+    UPDATE_BASE         Base URL for script updates
 
 Behavior:
-  Owner formats per port
+  Owner formats per port:
     default:      _<port>._tcp
-    with -h:      _<port>._tcp.<hostlabel>
+    with -H:      _<port>._tcp.<hostlabel>
     with -f:      _<port>._tcp.<host>.
+  
   DNS lookups in -c always query the absolute FQDN derived from -s (independent of print format).
-  With -zone, all TLSA records for each given port are removed, then fresh 3 1 1 and 2 0 1 are appended.
+  
+  -zone mode: Writes directly to zone file
+    • Removes all existing TLSA records for each port
+    • Appends fresh 3 1 1 and 2 0 1 records
+    • Creates backup before modification
+  
+  -n mode: Updates DNS via nsupdate
+    • Requires -H (host label only format)
+    • Deletes all TLSA records for each port first
+    • Adds new 3 1 1 and 2 0 1 records
+    • Works with dynamic DNS zones
 
 Examples:
   # Generate TLSA records for 465 with FQDN (trailing dot)
   ${SCRIPT_NAME} -s mx02.o-o-s.de -p 465 -t 60 -f
 
-  # Check TLSA records in DNS against the live certificate (25 and 587)
-  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -c -f
+  # Check TLSA records in DNS against the live certificate
+  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -c -H
 
-  # Update BIND zone file for 25 and 587, then sign
-  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -t 60 -h \\
+  # Write directly to BIND zone file, then sign
+  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -t 60 -H \\
     -zone /etc/bind/zones/o-o-s.de.zone \\
     -cmd "/etc/bind/sign.sh o-o-s.de 2"
+
+  # Update DNS dynamically via nsupdate (requires -H and NSUPDATE_SERVER in config)
+  ${SCRIPT_NAME} -s mx02.o-o-s.de -p 25,587 -t 60 -H -n o-o-s.de
 
   # Self-update (requires UPDATE_BASE in config)
   ${SCRIPT_NAME} -u
@@ -222,18 +247,19 @@ EOF
 
 #====================[ parse args ]====================
 SMTP_HOST=""; RAW_PORTS=""; TTL="60"; FULL=0; HOSTLABEL_ONLY=0; DO_CHECK=0
-ZONE_FILE=""; POST_CMD=""; DO_UPDATE=0
+ZONE_FILE=""; POST_CMD=""; DO_UPDATE=0; DO_NSUPDATE=0; NSUPDATE_ZONE_ARG=""
 
-while getopts ":s:p:t:fchv?z:-:u" opt; do
+while getopts ":s:p:t:n:fHcv?z:-:u" opt; do
   case "$opt" in
     s) SMTP_HOST="$OPTARG" ;;
     p) RAW_PORTS="$OPTARG" ;;
     t) TTL="$OPTARG" ;;
+    n) DO_NSUPDATE=1; NSUPDATE_ZONE_ARG="$OPTARG" ;;
     f) FULL=1 ;;
     c) DO_CHECK=1 ;;
-    h) HOSTLABEL_ONLY=1 ;;
+    H) HOSTLABEL_ONLY=1 ;;
     v) debug=1 ;;
-    z) ZONE_FILE="$OPTARG" ;;   # hidden short form for -zone if wanted
+    z) ZONE_FILE="$OPTARG" ;;
     u) DO_UPDATE=1 ;;
     -)
       case "$OPTARG" in
@@ -247,14 +273,14 @@ while getopts ":s:p:t:fchv?z:-:u" opt; do
   esac
 done
 
-# manual parse for "-zone" / "-cmd" (space-separated)
+# manual parse for "-zone" / "-cmd" (space-separated, backward compatibility)
 for ((i=1; i<=$#; i++)); do
   if [[ "${!i}" == "-zone" ]]; then j=$((i+1)); ZONE_FILE="${!j}"; fi
   if [[ "${!i}" == "-cmd"  ]]; then j=$((i+1)); POST_CMD="${!j}"; fi
 done
 
 #====================[ (optional) load configs ]====================
-# Config is only mandatory for self-update; optional otherwise:
+# Config is only mandatory for self-update and nsupdate; optional otherwise:
 [[ -f "$GLOBAL_CONFIG" ]] && { check_config_permissions "$GLOBAL_CONFIG"; source "$GLOBAL_CONFIG"; }
 [[ -f "$USER_CONFIG"   ]] && { check_config_permissions "$USER_CONFIG";   source "$USER_CONFIG"; }
 
@@ -280,11 +306,25 @@ fi
 #====================[ args validation for normal modes ]====================
 [[ -z "$SMTP_HOST" || -z "$RAW_PORTS" ]] && { print_help; exit 1; }
 if [[ $FULL -eq 1 && $HOSTLABEL_ONLY -eq 1 ]]; then
-  echo -e "[${RED}${CROSSMARK}${NC}] Options -f and -h cannot be used together."
+  echo -e "[${RED}${CROSSMARK}${NC}] Options -f and -H cannot be used together."
   exit 1
 fi
 if [[ -n "$ZONE_FILE" && $DO_CHECK -eq 1 ]]; then
   echo -e "[${RED}${CROSSMARK}${NC}] Options -zone and -c cannot be used together."
+  exit 1
+fi
+if [[ $DO_NSUPDATE -eq 1 && $DO_CHECK -eq 1 ]]; then
+  echo -e "[${RED}${CROSSMARK}${NC}] Options -n and -c cannot be used together."
+  exit 1
+fi
+if [[ -n "$ZONE_FILE" && $DO_NSUPDATE -eq 1 ]]; then
+  echo -e "[${RED}${CROSSMARK}${NC}] Options -zone and -n cannot be used together."
+  exit 1
+fi
+# -n requires -H
+if [[ $DO_NSUPDATE -eq 1 && $HOSTLABEL_ONLY -eq 0 ]]; then
+  echo -e "[${RED}${CROSSMARK}${NC}] Option -n (nsupdate) requires -H (host label only format)."
+  echo -e "Usage: ${SCRIPT_NAME} -s <host> -p <ports> -H -n <zone>"
   exit 1
 fi
 
@@ -305,6 +345,32 @@ done
 checkpackage openssl openssl
 checkpackage dig dnsutils
 checkpackage timeout coreutils
+
+# nsupdate prerequisites
+if [[ $DO_NSUPDATE -eq 1 ]]; then
+  checkpackage nsupdate dnsutils
+  
+  # Validate nsupdate config
+  if [[ -z "${NSUPDATE_SERVER:-}" ]]; then
+    echo -e "[${RED}${CROSSMARK}${NC}] NSUPDATE_SERVER not set in config. Required for -n mode."
+    exit 30
+  fi
+  
+  # Zone: prefer command line argument, fallback to config
+  if [[ -n "$NSUPDATE_ZONE_ARG" ]]; then
+    NSUPDATE_ZONE="$NSUPDATE_ZONE_ARG"
+  fi
+  
+  if [[ -z "${NSUPDATE_ZONE:-}" ]]; then
+    echo -e "[${RED}${CROSSMARK}${NC}] Zone not specified. Use -n <zone> or set NSUPDATE_ZONE in config."
+    exit 31
+  fi
+  
+  if [[ -n "${NSUPDATE_KEY_FILE:-}" && ! -f "${NSUPDATE_KEY_FILE}" ]]; then
+    echo -e "[${RED}${CROSSMARK}${NC}] NSUPDATE_KEY_FILE specified but file not found: ${NSUPDATE_KEY_FILE}"
+    exit 32
+  fi
+fi
 
 #====================[ TLS/DNS helper functions ]====================
 # OpenSSL connect timeout (seconds)
@@ -392,6 +458,24 @@ build_owner_query() {
   fi
 }
 
+build_owner_nsupdate() {
+  # $1=port — For nsupdate: return name relative to zone (without zone part)
+  local port="$1"
+  local host="${SMTP_HOST%.}"
+  local hostlabel="${host%%.*}"
+
+  if [[ $FULL -eq 1 ]]; then
+    # Full FQDN mode: return complete name
+    echo "_${port}._tcp.${host}"
+  elif [[ $HOSTLABEL_ONLY -eq 1 ]]; then
+    # Host label only: return just the label (will be appended to zone)
+    echo "_${port}._tcp.${hostlabel}"
+  else
+    # Default: full hostname
+    echo "_${port}._tcp.${host}"
+  fi
+}
+
 dns_get_tlsa() {
   local qname="$1"
   debug_msg "dig +short TLSA ${qname}"
@@ -465,6 +549,92 @@ zone_append_records() {
   } >> "$zf" || return 1
 }
 
+# --- nsupdate helpers ---
+nsupdate_delete_port_tlsas() {
+  # Delete all TLSA records for a given port via nsupdate
+  local port="$1"
+  local owner_ns; owner_ns="$(build_owner_nsupdate "$port")"
+  local update_file="/tmp/nsupdate.$$.del.${port}"
+  
+  {
+    echo "server ${NSUPDATE_SERVER}"
+    echo "zone ${NSUPDATE_ZONE}."
+    echo "update delete ${owner_ns}.${NSUPDATE_ZONE}. TLSA"
+    echo "send"
+  } > "$update_file"
+  
+  if [[ $debug -eq 1 ]]; then
+    debug_msg "cat $update_file:"
+    cat "$update_file" | sed 's/^/    /'
+    if [[ -n "${NSUPDATE_KEY_FILE:-}" ]]; then
+      debug_msg "nsupdate -k ${NSUPDATE_KEY_FILE} < $update_file"
+    else
+      debug_msg "nsupdate < $update_file"
+    fi
+  fi
+  
+  local result exitcode
+  if [[ -n "${NSUPDATE_KEY_FILE:-}" ]]; then
+    result=$(nsupdate -k "${NSUPDATE_KEY_FILE}" < "$update_file" 2>&1)
+    exitcode=$?
+  else
+    result=$(nsupdate < "$update_file" 2>&1)
+    exitcode=$?
+  fi
+  
+  if [[ $exitcode -eq 0 ]]; then
+    rm -f "$update_file"
+    return 0
+  else
+    [[ -n "$result" ]] && echo "$result" >&2
+    rm -f "$update_file"
+    return 1
+  fi
+}
+
+nsupdate_add_records() {
+  # Add new TLSA records via nsupdate
+  local port="$1" ttl="$2" hex311="$3" hex201="$4"
+  local owner_ns; owner_ns="$(build_owner_nsupdate "$port")"
+  local update_file="/tmp/nsupdate.$$.add.${port}"
+  
+  {
+    echo "server ${NSUPDATE_SERVER}"
+    echo "zone ${NSUPDATE_ZONE}."
+    echo "update add ${owner_ns}.${NSUPDATE_ZONE}. ${ttl} IN TLSA 3 1 1 ${hex311}"
+    echo "update add ${owner_ns}.${NSUPDATE_ZONE}. ${ttl} IN TLSA 2 0 1 ${hex201}"
+    echo "send"
+  } > "$update_file"
+  
+  if [[ $debug -eq 1 ]]; then
+    debug_msg "cat $update_file:"
+    cat "$update_file" | sed 's/^/    /'
+    if [[ -n "${NSUPDATE_KEY_FILE:-}" ]]; then
+      debug_msg "nsupdate -k ${NSUPDATE_KEY_FILE} < $update_file"
+    else
+      debug_msg "nsupdate < $update_file"
+    fi
+  fi
+  
+  local result exitcode
+  if [[ -n "${NSUPDATE_KEY_FILE:-}" ]]; then
+    result=$(nsupdate -k "${NSUPDATE_KEY_FILE}" < "$update_file" 2>&1)
+    exitcode=$?
+  else
+    result=$(nsupdate < "$update_file" 2>&1)
+    exitcode=$?
+  fi
+  
+  if [[ $exitcode -eq 0 ]]; then
+    rm -f "$update_file"
+    return 0
+  else
+    [[ -n "$result" ]] && echo "$result" >&2
+    rm -f "$update_file"
+    return 1
+  fi
+}
+
 run_post_cmd() {
   local cmd="$1"
   [[ -z "$cmd" ]] && return 0
@@ -519,6 +689,32 @@ main() {
       check_one "$owner_print" "$qname" "$TTL" 3 1 1 "$tlsa_311"
       check_one "$owner_print" "$qname" "$TTL" 2 0 1 "$tlsa_201"
       echo
+    elif [[ $DO_NSUPDATE -eq 1 ]]; then
+      # NSUPDATE MODE per port
+      echo
+      echo -ne "[ ] Deleting existing TLSA records via nsupdate for ${BOLD}${owner_print}${NOBOLD}\r"
+      if nsupdate_delete_port_tlsas "$PORT"; then
+        echo -e "[${GREEN}${CHECKMARK}${NC}] Deleting existing TLSA records via nsupdate for ${BOLD}${owner_print}${NOBOLD}"
+      else
+        echo -e "[${RED}${CROSSMARK}${NC}] Deleting existing TLSA records via nsupdate for ${BOLD}${owner_print}${NOBOLD}"
+        exit 17
+      fi
+
+      echo -ne "[ ] Adding new TLSA records via nsupdate for ${BOLD}${owner_print}${NOBOLD}\r"
+      if nsupdate_add_records "$PORT" "$TTL" "$tlsa_311" "$tlsa_201"; then
+        echo -e "[${GREEN}${CHECKMARK}${NC}] Adding new TLSA records via nsupdate for ${BOLD}${owner_print}${NOBOLD}"
+      else
+        echo -e "[${RED}${CROSSMARK}${NC}] Adding new TLSA records via nsupdate for ${BOLD}${owner_print}${NOBOLD}"
+        exit 18
+      fi
+      
+      # Show what was written
+      echo
+      echo "${BOLD}TLSA records (port ${PORT}):${NOBOLD}"
+      echo "${owner_print} ${TTL} IN TLSA 3 1 1 ${tlsa_311}"
+      echo "${owner_print} ${TTL} IN TLSA 2 0 1 ${tlsa_201}"
+      print_ttl_notice "$TTL"
+      
     elif [[ -n "$ZONE_FILE" ]]; then
       # ZONE UPDATE per port
       echo -ne "[ ] Deleting existing TLSA records for port ${BOLD}${PORT}${NOBOLD}\r"
@@ -548,7 +744,7 @@ main() {
   done
 
   # Run post-processing once (after all ports)
-  if [[ -n "$ZONE_FILE" && -n "$POST_CMD" ]]; then
+  if [[ (-n "$ZONE_FILE" || $DO_NSUPDATE -eq 1) && -n "$POST_CMD" ]]; then
     echo -ne "[ ] Running post-processing command\r"
     if run_post_cmd "$POST_CMD"; then
       echo -e "[${GREEN}${CHECKMARK}${NC}] Running post-processing command"
