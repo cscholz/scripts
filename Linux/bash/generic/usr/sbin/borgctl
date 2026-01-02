@@ -1,6 +1,6 @@
 #!/bin/bash
-# Version=20251102.03
-# Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
+# Version=20251102.04
+# Wrapper for easy borg usage - Added hook failure handling
 
 #====================[ exit codes ]====================
 # Standardized exit codes for error handling
@@ -67,6 +67,19 @@ debug_msg() {
     fi
 }
 
+# Print separator line for visual grouping
+# Args: $1=title (optional)
+print_separator() {
+    local title="${1:-}"
+    if [[ -n "$title" ]]; then
+        echo "────────────────────────────────────────"
+        echo "  $title"
+        echo "────────────────────────────────────────"
+    else
+        echo "────────────────────────────────────────"
+    fi
+}
+
 #====================[ runtime prerequisites ]====================
 # Check if a package is installed and offer to install it
 # Args: $1=executable name, $2=package name
@@ -102,13 +115,21 @@ register_tmpfile() {
 # Cleanup temporary files and run post-backup hook if applicable
 cleanup_on_exit() {
   if [[ "${__BACKUP_SUCCESS}" == "1" && -n "${post_backup_cmd:-}" ]]; then
-    log_status "[ ] Running post-backup hook" 1
+    print_separator "Post-Backup Hook"
+    log_status "[ ] Running: ${post_backup_cmd}" 1
     debug_msg "${post_backup_cmd}"
+    
     if bash -c "${post_backup_cmd}"; then
         log_status "[${GREEN}${CHECKMARK}${NC}] Post-backup hook completed" 1
     else
-        log_status "[${YELLOW}!${NC}] Post-backup hook exited non-zero" 1
+        local hook_rc=$?
+        if [[ "${continue_on_hook_failure:-no}" == "yes" ]]; then
+            log_status "[${YELLOW}!${NC}] Post-backup hook failed (ignored, continuing)" 1
+        else
+            log_status "[${RED}${CROSSMARK}${NC}] Post-backup hook failed" 1
+        fi
     fi
+    print_separator
   fi
 
   for f in "${__TMPFILES[@]}"; do
@@ -149,84 +170,69 @@ set -- "${args[@]}"
 #====================[ config loading ]====================
 config_loaded=0
 loaded_config_file=""
-global_config_exists=0
-user_config_exists=0
 
 if [[ -f "$GLOBAL_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$GLOBAL_CONFIG"
     config_loaded=1
     loaded_config_file="$GLOBAL_CONFIG"
-    global_config_exists=1
 fi
 if [[ -f "$USER_CONFIG" ]]; then
     # shellcheck source=/dev/null
     source "$USER_CONFIG"
     config_loaded=1
     loaded_config_file="$USER_CONFIG"
-    user_config_exists=1
-fi
-
-# Warn if both configs exist
-if [[ $global_config_exists -eq 1 && $user_config_exists -eq 1 ]]; then
-    multiple_configs_warning="${YELLOW}⚠${NC} Multiple config files detected:
-    Global: ${GLOBAL_CONFIG}
-    User:   ${USER_CONFIG} ${BOLD}(dominant)${NOBOLD}
-    → User config overrides global config settings!"
 fi
 
 if [[ "$config_loaded" -eq 0 ]]; then
-    # Allow init-config, help, readme, and completion to run without config
-    if [[ "${1:-}" != "init-config" && "${1:-}" != "help" && "${1:-}" != "--help" && "${1:-}" != "readme" && "${1:-}" != "completion" ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] No configuration file found!" 1
-        echo "Run: $0 init-config to create a configuration file"
-        exit "$EXIT_CONFIG_ERROR"
+    log_status "[${RED}${CROSSMARK}${NC}] No configuration file found!" 1
+    echo "Run: $0 init-config to create a configuration file"
+    exit "$EXIT_CONFIG_ERROR"
+fi
+
+# Validate required configuration variables
+if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
+    log_status "[${RED}${CROSSMARK}${NC}] No valid configuration found!" 1
+    exit "$EXIT_CONFIG_ERROR"
+fi
+
+# Validate and export borg passphrase early
+if [[ -z "${borg_passphrase:-}" ]] || [[ "${borg_passphrase}" =~ ^[[:space:]]*$ ]]; then
+    log_status "[${RED}${CROSSMARK}${NC}] borg_passphrase is empty or not set in config!" 1
+    exit "$EXIT_CONFIG_ERROR"
+fi
+export BORG_PASSPHRASE="${borg_passphrase}"
+
+# Export borg environment variables early so they're available for all operations
+if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
+    export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
+    if [[ "$debug" == "1" ]]; then
+        debug_msg "BORG_RELOCATED_REPO_ACCESS_IS_OK=yes (from config)"
     fi
 fi
 
-# Only validate config if it was loaded
-if [[ "$config_loaded" -eq 1 ]]; then
-    # Validate required configuration variables
-    if [[ -z "${ssh_remote_host:-}" || -z "${ssh_remote_user:-}" || -z "${ssh_remote_folder:-}" || -z "${borg_backup_name_format:-}" ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] No valid configuration found!" 1
-        exit "$EXIT_CONFIG_ERROR"
-    fi
-
-    # Validate and export borg passphrase early
-    if [[ -z "${borg_passphrase:-}" ]] || [[ "${borg_passphrase}" =~ ^[[:space:]]*$ ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] borg_passphrase is empty or not set in config!" 1
-        exit "$EXIT_CONFIG_ERROR"
-    fi
-    export BORG_PASSPHRASE="${borg_passphrase}"
-
-    # Export borg environment variables early so they're available for all operations
-    if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
-        export BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
-        if [[ "$debug" == "1" ]]; then
-            debug_msg "BORG_RELOCATED_REPO_ACCESS_IS_OK=yes (from config)"
-        fi
-    fi
-
-    # Validate SSH key exists before building BORG_RSH
-    if [[ ! -f "${ssh_remote_authfile:-}" ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] SSH key file not found: ${ssh_remote_authfile:-'(not set)'}" 1
-        exit "$EXIT_CONFIG_ERROR"
-    fi
-
-    # Build and export BORG_RSH early
-    export BORG_RSH="ssh -p ${ssh_remote_port:-22} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
-
-    # Validate compression setting (default to lz4 if not set or invalid)
-    if [[ -z "${compression:-}" ]]; then
-        compression="lz4"
-        if [[ "$debug" == "1" ]]; then
-            debug_msg "Compression not set, defaulting to: ${compression}"
-        fi
-    fi
-
-    # Validate minimum borg version if set in config
-    borg_min_version="${borg_min_version:-1.1.0}"
+# Validate SSH key exists before building BORG_RSH
+if [[ ! -f "${ssh_remote_authfile:-}" ]]; then
+    log_status "[${RED}${CROSSMARK}${NC}] SSH key file not found: ${ssh_remote_authfile:-'(not set)'}" 1
+    exit "$EXIT_CONFIG_ERROR"
 fi
+
+# Build and export BORG_RSH early
+export BORG_RSH="ssh -p ${ssh_remote_port:-22} -oStrictHostKeyChecking=no -oBatchMode=yes -i ${ssh_remote_authfile}"
+
+# Validate compression setting (default to lz4 if not set or invalid)
+if [[ -z "${compression:-}" ]]; then
+    compression="lz4"
+    if [[ "$debug" == "1" ]]; then
+        debug_msg "Compression not set, defaulting to: ${compression}"
+    fi
+fi
+
+# Validate minimum borg version if set in config
+borg_min_version="${borg_min_version:-1.1.0}"
+
+# Set default for continue_on_hook_failure if not set
+continue_on_hook_failure="${continue_on_hook_failure:-no}"
 
 #====================[ run lock (acquire on demand) ]====================
 LOCK_DIR="/var/lock"; [[ -w "$LOCK_DIR" ]] || LOCK_DIR="/tmp"
@@ -420,21 +426,14 @@ ssh_connection_test() {
 
 # Check if repository is reachable
 repo_preflight() {
-  log_status "[i] Repository reachability check..." 1
-  echo "    Note: Checking repository access and integrity"
+  log_status "[ ] Repository reachability check"
 
   local timeout_val="${borg_operation_timeout:-300}"
   local tmpout
   tmpout=$(tempfile)
 
-  # Run borg info in background with spinner
-  timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$tmpout" &
-  local borg_pid=$!
-  show_progress_spinner "$borg_pid"
-  wait "$borg_pid"
+  timeout "$timeout_val" borg info "$repo_path" >"$tmpout" 2>&1
   local rc=$?
-  
-  echo
 
   # Check if error is due to relocated repository
   if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$tmpout"; then
@@ -446,10 +445,10 @@ repo_preflight() {
   fi
 
   if [[ $rc -eq 0 ]]; then
-    log_status "[${GREEN}${CHECKMARK}${NC}] Repository is reachable" 1
+    log_status "[${GREEN}${CHECKMARK}${NC}] Repository reachability check" 1
     return "$EXIT_SUCCESS"
   else
-    log_status "[${RED}${CROSSMARK}${NC}] Repository not reachable" 1
+    log_status "[${RED}${CROSSMARK}${NC}] Repository reachability check" 1
     return "$EXIT_BORG_ERROR"
   fi
 }
@@ -490,29 +489,6 @@ check_remote_disk_space() {
 
     log_status "[${GREEN}${CHECKMARK}${NC}] Checking remote disk space (${available_mb}MB available)" 1
     return "$EXIT_SUCCESS"
-}
-
-# Show elapsed time while a process runs
-# Args: $1=PID to monitor, $2=optional message prefix
-show_progress_spinner() {
-    local pid=$1
-    local prefix="${2:-    Progress:}"
-    local start_time=$(date +%s)
-    local showed_30s_message=0
-    
-    while ps -p "$pid" > /dev/null 2>&1; do
-        local elapsed=$(($(date +%s) - start_time))
-        printf "\r%s %ds elapsed" "$prefix" "$elapsed"
-        sleep 1
-        
-        # Show helpful message after 30 seconds
-        if [[ $elapsed -ge 30 && $showed_30s_message -eq 0 ]]; then
-            printf "\n    Still working - this is normal for large/relocated repositories\n"
-            showed_30s_message=1
-        fi
-    done
-    
-    printf "\r%s Completed in %ds%20s\n" "$prefix" "$(($(date +%s) - start_time))" ""
 }
 
 # Send email notification
@@ -596,13 +572,24 @@ backup_create() {
     fi
 
     if [[ -n "${pre_backup_cmd:-}" ]]; then
-      log_status "[ ] Running pre-backup hook" 1
+      print_separator "Pre-Backup Hook"
+      log_status "[ ] Running: ${pre_backup_cmd}" 1
       debug_msg "${pre_backup_cmd}"
+      
       if ! bash -c "${pre_backup_cmd}"; then
-        log_status "[${RED}${CROSSMARK}${NC}] Pre-backup hook failed" 1
-        return "$EXIT_BORG_ERROR"
+        local hook_rc=$?
+        if [[ "${continue_on_hook_failure:-no}" == "yes" ]]; then
+          log_status "[${YELLOW}!${NC}] Pre-backup hook failed (ignored, continuing)" 1
+          print_separator
+        else
+          log_status "[${RED}${CROSSMARK}${NC}] Pre-backup hook failed" 1
+          print_separator
+          return "$EXIT_BORG_ERROR"
+        fi
+      else
+        log_status "[${GREEN}${CHECKMARK}${NC}] Pre-backup hook completed" 1
+        print_separator
       fi
-      log_status "[${GREEN}${CHECKMARK}${NC}] Pre-backup hook completed" 1
     fi
 
     repo_preflight || return "$EXIT_BORG_ERROR"
@@ -631,20 +618,11 @@ backup_create() {
         "${exclude_args[@]}"
     )
 
-    local timeout_val="${borg_backup_timeout:-}"
+    local timeout_val="${borg_operation_timeout:-3600}"
     local borg_log_file
     borg_log_file=$(tempfile)
 
-    # Use timeout only if configured, otherwise run without timeout (infinite)
-    local timeout_cmd=""
-    if [[ -n "$timeout_val" ]]; then
-        timeout_cmd="timeout $timeout_val"
-        debug_msg "Using backup timeout: ${timeout_val}s"
-    else
-        debug_msg "No backup timeout configured (infinite)"
-    fi
-
-    $timeout_cmd borg create \
+    timeout "$timeout_val" borg create \
         "${borg_create_opts[@]}" \
         --stats \
         --progress \
@@ -655,11 +633,7 @@ backup_create() {
     echo
 
     if [[ $rc -eq 124 ]]; then
-        if [[ -n "$timeout_val" ]]; then
-            log_status "[${RED}${CROSSMARK}${NC}] Backup timed out after ${timeout_val}s" 1
-        else
-            log_status "[${RED}${CROSSMARK}${NC}] Backup timed out" 1
-        fi
+        log_status "[${RED}${CROSSMARK}${NC}] Backup timed out after ${timeout_val}s" 1
         send_heartbeat "failure"
         return "$EXIT_BORG_ERROR"
     fi
@@ -775,24 +749,14 @@ backup_delete() {
 backup_list_and_mail() {
     acquire_run_lock
     set_variables "full"
-    log_status "[i] Listing all backups..." 1
-    echo
+    log_status "[ ] Listing all backups" 1
 
-    local timeout_val="${borg_operation_timeout:-300}"
     local mailfile
     mailfile=$(tempfile)
     debug_msg "borg list $repo_path > $mailfile"
 
-    timeout "$timeout_val" borg list "$repo_path" 2>&1 | tee "$mailfile"
-    local rc=${PIPESTATUS[0]}
-    
-    echo
-    
-    # Check for timeout
-    if [[ $rc -eq 124 ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] Listing backups timed out after ${timeout_val}s" 1
-        return "$EXIT_BORG_ERROR"
-    fi
+    borg list "$repo_path" > "$mailfile" 2>&1
+    local rc=$?
 
     # Check if error is due to relocated repository
     if [[ $rc -ne 0 ]] && grep -qi "cache.*newer than repository\|multiple repos with same ID" "$mailfile"; then
@@ -803,8 +767,10 @@ backup_list_and_mail() {
         fi
     fi
 
+    cat "$mailfile"
+
     if [[ $rc -eq 0 ]]; then
-        log_status "[${GREEN}${CHECKMARK}${NC}] Listed all backups" 1
+        log_status "[${GREEN}${CHECKMARK}${NC}] Listing all backups" 1
         if [[ -n "${mail_recipient:-}" ]]; then
             local subject="$(hostname) borg LIST - [${repo_name}]"
             send_mail_notification "$subject" "$mailfile"
@@ -1074,31 +1040,19 @@ repo_health_check() {
 repo_maintain() {
     acquire_run_lock
     set_variables "full"
-    
-    local timeout_val="${borg_operation_timeout:-300}"
+
     local mailfile
     mailfile=$(tempfile)
     local prune_output
     prune_output=$(tempfile)
 
     # Get repository size before maintenance
-    log_status "[i] Gathering repository statistics..." 1
-    if [[ "${BORG_RELOCATED_REPO_ACCESS_IS_OK:-no}" == "yes" ]]; then
-        echo "    Note: Relocated repository - may take 2-5 minutes on first access"
-    else
-        echo "    Note: May take 1-3 minutes for large repositories"
-    fi
-    
+    log_status "[ ] Gathering repository statistics" 1
+    echo
     local repo_info_before
     repo_info_before=$(tempfile)
-    
-    # Run borg info in background with spinner
-    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$repo_info_before" &
-    local borg_pid=$!
-    show_progress_spinner "$borg_pid"
-    wait "$borg_pid"
-    local rc=$?
-    
+    borg info "$repo_path" 2>&1 | tee "$repo_info_before"
+    local rc=${PIPESTATUS[0]}
     echo
 
     # Check for repository ID mismatch warning
@@ -1144,20 +1098,21 @@ repo_maintain() {
     # The output format is:
     #                        Original size      Compressed size    Deduplicated size
     # All archives:              117.32 TB             90.17 TB            816.62 GB
-    # We want the Deduplicated size (actual disk usage) which is field 7+8 in awk
+    # We want the second column (Compressed size) which is field 3 in awk
     
-    size_before=$(grep "All archives:" "$repo_info_before" | awk '{print $7, $8}' | tr -d '\n')
+    size_before=$(grep "All archives:" "$repo_info_before" | awk '{print $3, $4}' | tr -d '\n')
     
     # Fallback: Try old format if new format didn't work
     if [[ -z "$size_before" ]]; then
-        size_before=$(grep "Deduplicated size:" "$repo_info_before" | head -1 | sed 's/.*Deduplicated size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
+        size_before=$(grep "Compressed size:" "$repo_info_before" | head -1 | sed 's/.*Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
     fi
 
     if [[ -z "$size_before" ]]; then
         size_before="Unknown"
     fi
 
-    debug_msg "Repository size before (deduplicated/on disk): ${size_before}"
+    debug_msg "Repository size before: ${size_before}"
+    log_status "[${GREEN}${CHECKMARK}${NC}] Gathering repository statistics" 1
 
     # Prune old backups
     log_status "[ ] Pruning old backups" 1
@@ -1206,37 +1161,64 @@ repo_maintain() {
         return "$EXIT_BORG_ERROR"
     fi
 
-    # Display results
-    log_status "[i] Gathering final repository statistics..." 1
-    echo "    Note: Collecting post-maintenance statistics"
-    
+    # Extract space saved directly from compact output
+    log_status "[ ] Calculating space savings" 1
+
+    local space_saved="Unknown"
+    local space_freed=""
+
+    # Look for various patterns in compact output
+    # Pattern 1: "Freed: X.XX GB"
+    space_freed=$(grep -i "freed" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
+
+    if [[ -z "$space_freed" ]]; then
+        # Pattern 2: "X.XX GB freed" or "saved X.XX GB"
+        space_freed=$(grep -iE "saved|freed|compaction.*[0-9]" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
+    fi
+
+    if [[ -z "$space_freed" ]]; then
+        # Pattern 3: Look in "Compaction saved" line
+        space_freed=$(grep -i "compaction saved" "$compact_output" | grep -oE "[0-9]+\.[0-9]+ [KMGT]?B" | head -1 | tr -d '\n')
+    fi
+
+    if [[ -n "$space_freed" ]]; then
+        space_saved="$space_freed"
+    else
+        # Check if compaction was skipped
+        if grep -qi "compaction not necessary\|not enough segments\|below threshold" "$compact_output"; then
+            space_saved="0 B (compaction not necessary)"
+        else
+            space_saved="0 B (no space freed)"
+        fi
+    fi
+
+    debug_msg "Space saved from compact: ${space_saved}"
+
+    # Get repository size after maintenance (for reference)
+    log_status "[ ] Gathering final repository statistics" 1
+    echo
     local repo_info_after
     repo_info_after=$(tempfile)
-    
-    # Run borg info in background with spinner
-    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$repo_info_after" &
-    local borg_pid=$!
-    show_progress_spinner "$borg_pid"
-    wait "$borg_pid"
-    
+    borg info "$repo_path" 2>&1 | tee "$repo_info_after"
     echo
 
     # Extract size using same methods
     local size_after
     
-    # Same extraction as size_before: field 7+8 from "All archives:" line (Deduplicated size - actual disk usage)
-    size_after=$(grep "All archives:" "$repo_info_after" | awk '{print $7, $8}' | tr -d '\n')
+    # Same extraction as size_before: field 3 from "All archives:" line
+    size_after=$(grep "All archives:" "$repo_info_after" | awk '{print $3, $4}' | tr -d '\n')
     
     # Fallback: Try old format
     if [[ -z "$size_after" ]]; then
-        size_after=$(grep "Deduplicated size:" "$repo_info_after" | head -1 | sed 's/.*Deduplicated size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
+        size_after=$(grep "Compressed size:" "$repo_info_after" | head -1 | sed 's/.*Compressed size:[[:space:]]*\([0-9.]*\) \([A-Z]*\).*/\1 \2/' | tr -d '\n')
     fi
 
     if [[ -z "$size_after" ]]; then
         size_after="Unknown"
     fi
 
-    debug_msg "Repository size after (deduplicated/on disk): ${size_after}"
+    debug_msg "Repository size after: ${size_after}"
+    log_status "[${GREEN}${CHECKMARK}${NC}] Calculating space savings" 1
 
     # Display results
     echo
@@ -1244,8 +1226,9 @@ repo_maintain() {
     echo "Repository Maintenance Summary"
     echo "======================================"
     echo "Archives pruned:     ${pruned_count}"
-    echo "Disk usage before:   ${size_before}"
-    echo "Disk usage after:    ${size_after}"
+    echo "Size before:         ${size_before}"
+    echo "Size after:          ${size_after}"
+    echo "Space saved:         ${space_saved}"
     echo "======================================"
     echo
 
@@ -1266,8 +1249,9 @@ repo_maintain() {
             echo "======================================"
             echo
             echo "Archives pruned:     ${pruned_count}"
-            echo "Disk usage before:   ${size_before}"
-            echo "Disk usage after:    ${size_after}"
+            echo "Size before:         ${size_before}"
+            echo "Size after:          ${size_after}"
+            echo "Space saved:         ${space_saved}"
             echo
             echo "======================================"
             echo "Pruned Archives"
@@ -1304,7 +1288,7 @@ repo_maintain() {
             echo
         } > "$mailfile"
 
-        local subject="$(hostname) borg MAINTENANCE - [${repo_name}]"
+        local subject="$(hostname) borg MAINTENANCE - [${repo_name}] - Saved: ${space_saved}"
         send_mail_notification "$subject" "$mailfile"
 
         log_status "[${GREEN}${CHECKMARK}${NC}] Sending email notification" 1
@@ -1316,32 +1300,12 @@ repo_maintain() {
 # Check if repository has an active lock
 repo_lock_check() {
     set_variables "full"
-    log_status "[i] Checking for repository lock..." 1
-    echo "    Note: May take 1-2 minutes for large/relocated repositories"
-    
+    log_status "[ ] Checking for repository lock"
     debug_msg "borg info \"$repo_path\""
 
-    local timeout_val="${borg_operation_timeout:-300}"
-    local tmpout
-    tmpout=$(tempfile)
-    
-    # Run borg info in background with spinner
-    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$tmpout" &
-    local borg_pid=$!
-    show_progress_spinner "$borg_pid"
-    wait "$borg_pid"
-    local rc=$?
-    
-    echo
-    
-    # Check for timeout
-    if [[ $rc -eq 124 ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] Repository check timed out after ${timeout_val}s" 1
-        return "$EXIT_BORG_ERROR"
-    fi
-    
     local repostatus
-    repostatus=$(cat "$tmpout")
+    repostatus=$(borg info "$repo_path" 2>&1)
+    local rc=$?
 
     if [[ "${repostatus}" == *"Failed to create/acquire the lock"* ]]; then
         log_status "[${RED}${CROSSMARK}${NC}] Repository is locked" 1
@@ -1418,33 +1382,11 @@ repo_cache_rebuild() {
     local repo_id
     
     # Try to get repository ID first
-    log_status "[i] Getting repository ID..." 1
-    echo "    Note: May take 1-2 minutes for relocated repositories"
-    
-    local timeout_val="${borg_operation_timeout:-300}"
-    local repo_info_temp
-    repo_info_temp=$(tempfile)
-    
-    # Run borg info in background with spinner
-    timeout "$timeout_val" borg info "$repo_path" 2>&1 | tee "$repo_info_temp" &
-    local borg_pid=$!
-    show_progress_spinner "$borg_pid"
-    wait "$borg_pid"
-    local rc=$?
-    
-    echo
-    
-    # Check for timeout
-    if [[ $rc -eq 124 ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] Getting repository ID timed out after ${timeout_val}s" 1
-        return "$EXIT_BORG_ERROR"
-    fi
-    
-    repo_id=$(grep "Repository ID:" "$repo_info_temp" | awk '{print $3}')
+    log_status "[ ] Getting repository ID" 1
+    repo_id=$(borg info "$repo_path" 2>/dev/null | grep "Repository ID:" | awk '{print $3}')
     
     if [[ -n "$repo_id" ]]; then
-        log_status "[${GREEN}${CHECKMARK}${NC}] Repository ID: ${repo_id}" 1
-        echo
+        log_status "[${GREEN}${CHECKMARK}${NC}] Getting repository ID: ${repo_id}" 1
         
         # Delete specific cache and security directories
         log_status "[ ] Deleting cache for this repository"
@@ -1498,31 +1440,12 @@ repo_cache_rebuild() {
     fi
     
     # Rebuild cache by running borg list
-    log_status "[i] Rebuilding cache from repository..." 1
-    echo "    Note: This will list all archives and may take a few minutes"
-    
-    local timeout_val="${borg_operation_timeout:-300}"
-    debug_msg "borg list \"$repo_path\""
-    
-    # Run borg list in background with spinner
-    timeout "$timeout_val" borg list "$repo_path" 2>&1 &
-    local borg_pid=$!
-    show_progress_spinner "$borg_pid"
-    wait "$borg_pid"
-    local rc=$?
-    
+    log_status "[ ] Rebuilding cache from repository"
     echo
     
-    # Check for timeout
-    if [[ $rc -eq 124 ]]; then
-        log_status "[${RED}${CROSSMARK}${NC}] Cache rebuild timed out after ${timeout_val}s" 1
-        echo
-        echo -e "${RED}Cache rebuild timed out!${NC}"
-        return "$EXIT_BORG_ERROR"
-    fi
-    
-    if [[ $rc -eq 0 ]]; then
-        log_status "[${GREEN}${CHECKMARK}${NC}] Cache successfully rebuilt" 1
+    debug_msg "borg list \"$repo_path\""
+    if borg list "$repo_path" >/dev/null 2>&1; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Rebuilding cache from repository" 1
         echo
         echo -e "${GREEN}Cache successfully rebuilt!${NC}"
         echo
@@ -1580,13 +1503,13 @@ borg_keep_monthly="12"
 borg_keep_yearly="3"
 
 borg_compact_threshold="10"
-borg_operation_timeout="300"
-
-# Backup creation timeout (empty = no timeout/infinite, recommended for large backups)
-# borg_backup_timeout="7200"
-
+borg_operation_timeout="3600"
 check_remote_disk_space="yes"
 min_remote_space_mb="1024"
+
+# Continue backup even if pre/post hooks fail
+# Default: no (hooks must succeed)
+continue_on_hook_failure="no"
 
 # pre_backup_cmd="systemctl stop myapp"
 # post_backup_cmd="systemctl start myapp"
@@ -1613,36 +1536,17 @@ init_config_wizard() {
     echo
 
     if [[ -f "$config_path" ]]; then
-        # Config exists - ask what to do
         echo -e "${YELLOW}Config file already exists: $config_path${NC}"
-        echo
-        echo "Options:"
-        echo "  1) Migrate existing config to new template (keeps your settings)"
-        echo "  2) Overwrite with fresh template (loses your settings)"
-        echo "  3) Cancel"
-        echo
-        read -rp "Choose option [1-3]: " choice
-        
-        case "$choice" in
-            1)
-                migrate=1
-                echo "→ Migrating existing configuration..."
-                ;;
-            2)
-                migrate=0
-                echo "→ Creating fresh configuration..."
-                ;;
-            *)
+        read -rp "Migrate existing config to new template? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            migrate=1
+        else
+            read -rp "Overwrite with new template? (y/N): " confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
                 echo "Cancelled."
                 return "$EXIT_USER_ABORT"
-                ;;
-        esac
-        echo
-    else
-        # No config exists - create new one
-        echo "No configuration file found. Creating new configuration..."
-        echo "Location: $config_path"
-        echo
+            fi
+        fi
     fi
 
     local config_dir
@@ -1683,10 +1587,10 @@ borg_keep_weekly="${borg_keep_weekly:-12}"
 borg_keep_monthly="${borg_keep_monthly:-12}"
 borg_keep_yearly="${borg_keep_yearly:-3}"
 borg_compact_threshold="${borg_compact_threshold:-10}"
-borg_operation_timeout="${borg_operation_timeout:-300}"
-$(if [[ -n "${borg_backup_timeout:-}" ]]; then echo "borg_backup_timeout=\"${borg_backup_timeout}\""; else echo "# borg_backup_timeout=\"7200\""; fi)
+borg_operation_timeout="${borg_operation_timeout:-3600}"
 check_remote_disk_space="${check_remote_disk_space:-yes}"
 min_remote_space_mb="${min_remote_space_mb:-1024}"
+continue_on_hook_failure="${continue_on_hook_failure:-no}"
 $(if [[ -n "${pre_backup_cmd:-}" ]]; then echo "pre_backup_cmd=\"${pre_backup_cmd}\""; else echo "# pre_backup_cmd=\"systemctl stop myapp\""; fi)
 $(if [[ -n "${post_backup_cmd:-}" ]]; then echo "post_backup_cmd=\"${post_backup_cmd}\""; else echo "# post_backup_cmd=\"systemctl start myapp\""; fi)
 mail_recipient="${mail_recipient:-admin@example.com}"
@@ -1700,6 +1604,7 @@ EOF
         echo "  Old config: $backup_path"
         echo "  New config: $config_path"
     else
+        echo
         echo "Creating example configuration at: $config_path"
         generate_example_config > "$config_path"
         echo
@@ -1728,11 +1633,6 @@ EOF
 
 # Validate configuration and system prerequisites
 config_check_command() {
-    if [[ -n "${multiple_configs_warning:-}" ]]; then
-        echo -e "${multiple_configs_warning}"
-        echo
-    fi
-    
     echo -e "${BOLD}Configuration & Prerequisites Check${NOBOLD}"
     echo "===================================="
     echo
@@ -1786,6 +1686,13 @@ config_check_command() {
         echo -e "${GREEN}✓${NC} Enabled (relocated repo access allowed)"
     else
         echo -e "${BLUE}i${NC} Not set (default behavior)"
+    fi
+
+    echo -n "Checking continue_on_hook_failure... "
+    if [[ "${continue_on_hook_failure:-no}" == "yes" ]]; then
+        echo -e "${YELLOW}!${NC} Enabled (hook failures will be ignored)"
+    else
+        echo -e "${GREEN}✓${NC} Disabled (hooks must succeed)"
     fi
 
     echo "Checking backup paths..."
@@ -1849,21 +1756,20 @@ config_check_command() {
 show_readme() {
     cat <<'EOF'
 # borgctl - Borg Backup Wrapper Script
-Version 20251015.07
+Version 20251102.04
 
-## Changes in This Version (v.07)
-- ADDED: Warning when both global and user config exist
-- Shows which config is dominant (user config overrides global)
-- Helps prevent configuration conflicts
-- Previous (v.06): Fixed init-config to work without existing config file
-- Previous (v.05): Backup timeout is now configurable via borg_backup_timeout
-- Previous (v.04): Size reporting now uses Deduplicated size (actual disk usage)
+## Changes in This Version (v.04)
+- ADDED: continue_on_hook_failure option to ignore pre/post hook failures
+- ADDED: Visual separation for pre/post backup hooks with separator lines
+- Shows command path in hook execution
+- Distinguishes [!] (ignored failure) from [✗] (blocking failure)
+- Previous (v.03/v.04 Oct): Using deduplicated size (actual disk usage) for reporting
 
 ## Features
 - Automated backup creation with compression and deduplication
 - Email notifications for backup status
 - Monitoring integration (heartbeat URLs)
-- Pre/post backup hooks
+- Pre/post backup hooks with failure handling
 - SSH connection testing
 - Remote disk space checks
 - Lock management
@@ -1880,26 +1786,19 @@ Version 20251015.07
 5. ./borgctl.sh config-check
 6. ./borgctl.sh repo init
 
-## Configuration Hierarchy
-The script supports two configuration locations:
-- **Global**: /etc/borgctl.conf (system-wide)
-- **User**: ~/.config/borgctl.conf (user-specific)
+## Hook Failure Handling
+New in v.04: Control how pre/post backup hook failures are handled:
 
-If both exist, the user config takes precedence and overrides global settings.
-The script will warn you when both configs are detected.
+continue_on_hook_failure="no"   # Default: hooks must succeed
+continue_on_hook_failure="yes"  # Ignore hook failures, continue anyway
 
-Recommendation: Use only one config file to avoid confusion.
+When enabled, failed hooks show [!] instead of [✗] and backup continues.
 
 ## Configuration
 Important: If your repository was moved or relocated, add to your config:
 BORG_RELOCATED_REPO_ACCESS_IS_OK="yes"
 
 This will suppress all repository ID mismatch warnings and allow operations to proceed automatically.
-
-For large backups, you can set a timeout (in seconds):
-borg_backup_timeout="7200"
-
-Leave it unset or commented out for infinite timeout (recommended for large backups).
 
 ## Cache Rebuild
 If you restored your repository from backup or have cache issues:
@@ -2054,13 +1953,7 @@ show_help() {
 
 #====================[ main ]====================
 main() {
-    # Show multiple configs warning for commands that use config
-    if [[ $# -gt 0 && "$1" != "--help" && "$1" != "help" && "$1" != "completion" && "$1" != "init-config" && "$1" != "readme" && "$1" != "-u" ]]; then
-        if [[ -n "${multiple_configs_warning:-}" ]]; then
-            echo -e "${multiple_configs_warning}" 1>&2
-            echo 1>&2
-        fi
-        
+    if [[ $# -gt 0 && "$1" != "--help" && "$1" != "help" && "$1" != "completion" && "$1" != "init-config" && "$1" != "config-check" && "$1" != "readme" && "$1" != "-u" ]]; then
         if [[ "$debug" == "1" ]]; then
             debug_msg "Using config: ${loaded_config_file}"
         else
