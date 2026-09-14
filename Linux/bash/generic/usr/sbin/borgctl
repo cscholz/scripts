@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20260306.01
+# Version=20260914.01
 # Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
@@ -1054,10 +1054,11 @@ repo_info() {
 repo_health_check() {
     acquire_run_lock
     set_variables "full"
-    log_status "[ ] Checking repository health"
-    debug_msg "borg check \"$repo_path\""
+    log_status "[i] Checking repository health (may take a long time for large repositories)" 1
+    debug_msg "borg check --progress --verbose \"$repo_path\""
 
-    borg check "$repo_path"
+    # --progress: segment percentage, --verbose: phases and archive counter
+    borg check --progress --verbose "$repo_path"
     local rc=$?
 
     if [[ $rc -eq 0 ]]; then
@@ -1537,7 +1538,80 @@ repo_cache_rebuild() {
         echo "  • Passphrase is correct"
         return "$EXIT_BORG_ERROR"
     fi
-    
+
+    return "$EXIT_SUCCESS"
+}
+
+# Repair repository inconsistencies (borg check --repair)
+repo_repair() {
+    acquire_run_lock
+    set_variables "full"
+
+    echo
+    echo -e "${BOLD}Repository Repair${NOBOLD}"
+    echo "================="
+    echo
+    echo "Repository: ${repo_path}"
+    echo
+    echo -e "${RED}WARNING: 'borg check --repair' is a potentially dangerous operation!${NC}"
+    echo "It may lead to data loss for kinds of corruption borg cannot fix."
+    echo "Make sure no other borg process accesses the repository."
+    echo
+
+    read -rp "Continue with repository repair? (type 'YES' to confirm): " confirm
+    if [[ "$confirm" != "YES" ]]; then
+        log_status "[${YELLOW}!${NC}] Repository repair cancelled" 1
+        return "$EXIT_USER_ABORT"
+    fi
+    echo
+
+    log_status "[i] Repairing repository (may take a long time for large repositories)" 1
+    debug_msg "borg check --repair --progress --verbose \"$repo_path\""
+
+    # Confirmation already done above, skip borg's own prompt
+    BORG_CHECK_I_KNOW_WHAT_I_AM_DOING=YES borg check --repair --progress --verbose "$repo_path"
+    local rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Repairing repository" 1
+    else
+        log_status "[${RED}${CROSSMARK}${NC}] Repairing repository" 1
+        return "$EXIT_BORG_ERROR"
+    fi
+
+    return "$EXIT_SUCCESS"
+}
+
+# Delete only the local cache of the repository (borg delete --cache-only)
+repo_purge_local_cache() {
+    acquire_run_lock
+    set_variables "full"
+
+    echo
+    echo "Repository: ${repo_path}"
+    echo -e "${YELLOW}NOTE: This will NOT delete any backups in the repository!${NC}"
+    echo "      Only the local cache is removed and rebuilt on next access."
+    echo
+
+    read -rp "Purge local cache? (yes/NO): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        log_status "[${YELLOW}!${NC}] Cache purge cancelled" 1
+        return "$EXIT_USER_ABORT"
+    fi
+
+    log_status "[ ] Purging local cache"
+    debug_msg "borg delete --cache-only \"$repo_path\""
+
+    borg delete --cache-only "$repo_path"
+    local rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Purging local cache" 1
+    else
+        log_status "[${RED}${CROSSMARK}${NC}] Purging local cache" 1
+        return "$EXIT_BORG_ERROR"
+    fi
+
     return "$EXIT_SUCCESS"
 }
 
@@ -1985,7 +2059,7 @@ _borgctl_complete() {
 
   local sub1="backup repo completion help init-config readme config-check"
   local backup_sub="create delete list mount restore"
-  local repo_sub="init info health-check maintain lock-check lock-break cache-rebuild"
+  local repo_sub="init info health-check maintain lock-check lock-break cache-rebuild repair purge-local-cache"
 
   if [[ ${cword} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${sub1}" -- "$cur") )
@@ -2030,6 +2104,8 @@ show_help() {
     echo "    repo lock-check                    Check for locks"
     echo "    repo lock-break                    Break lock"
     echo "    repo cache-rebuild                 Rebuild local cache"
+    echo "    repo repair                        Repair repository (check --repair)"
+    echo "    repo purge-local-cache             Delete local cache only"
     echo
     echo -e "  ${b}Configuration & Help:${nb}"
     echo "    init-config                        Create configuration"
@@ -2155,6 +2231,16 @@ main() {
                 cache-rebuild)
                     shift 2
                     repo_cache_rebuild "$@"
+                    exit $?
+                    ;;
+                repair)
+                    shift 2
+                    repo_repair "$@"
+                    exit $?
+                    ;;
+                purge-local-cache)
+                    shift 2
+                    repo_purge_local_cache "$@"
                     exit $?
                     ;;
                 *)
