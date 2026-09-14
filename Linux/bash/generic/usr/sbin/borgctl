@@ -1566,7 +1566,7 @@ repo_repair() {
     echo
 
     log_status "[i] Repairing repository (may take a long time for large repositories)" 1
-    debug_msg "borg check --repair --progress --verbose \"$repo_path\""
+    debug_msg "BORG_CHECK_I_KNOW_WHAT_I_AM_DOING=YES borg check --repair --progress --verbose \"$repo_path\""
 
     # Confirmation already done above, skip borg's own prompt
     BORG_CHECK_I_KNOW_WHAT_I_AM_DOING=YES borg check --repair --progress --verbose "$repo_path"
@@ -1609,6 +1609,113 @@ repo_purge_local_cache() {
         log_status "[${GREEN}${CHECKMARK}${NC}] Purging local cache" 1
     else
         log_status "[${RED}${CROSSMARK}${NC}] Purging local cache" 1
+        return "$EXIT_BORG_ERROR"
+    fi
+
+    return "$EXIT_SUCCESS"
+}
+
+# Manifest and archive TAM upgrade (CVE-2023-36811, required since borg 1.2.5 / 1.4)
+# See: https://borgbackup.readthedocs.io/en/stable/changes.html#pre-1-2-5-archives-spoofing-vulnerability-cve-2023-36811
+# Usage: repo upgrade-tam [--check]   (--check only reports, changes nothing)
+repo_upgrade_tam() {
+    local check_only=0
+    [[ "${1:-}" == "--check" ]] && check_only=1
+
+    acquire_run_lock
+    set_variables "full"
+
+    echo
+    echo -e "${BOLD}Repository TAM Upgrade${NOBOLD}"
+    echo "======================"
+    echo
+    echo "Repository: ${repo_path}"
+    echo
+    echo "Borg >= 1.2.5 requires TAM authentication for the manifest and all archives."
+    echo "Archives without TAM (created by borg < 1.0.9, or by rename/recreate with"
+    echo "affected versions) are hidden or rejected by borg 1.4."
+    echo
+
+    # Step 1: manifest TAM
+    log_status "[i] Step 1/2: Checking manifest TAM" 1
+    debug_msg "borg upgrade --show-rc --check-tam \"$repo_path\""
+    borg upgrade --show-rc --check-tam "$repo_path"
+    local manifest_rc=$?
+
+    if [[ $manifest_rc -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Manifest TAM OK" 1
+    else
+        log_status "[${YELLOW}!${NC}] Manifest TAM missing or invalid" 1
+    fi
+    echo
+
+    # Step 2: archive TAMs
+    log_status "[i] Step 2/2: Checking archive TAMs" 1
+    debug_msg "BORG_WORKAROUNDS=ignore_invalid_archive_tam borg upgrade --show-rc --check-archives-tam \"$repo_path\""
+    BORG_WORKAROUNDS=ignore_invalid_archive_tam borg upgrade --show-rc --check-archives-tam "$repo_path"
+    local archives_rc=$?
+
+    if [[ $archives_rc -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Archive TAMs OK" 1
+    else
+        log_status "[${YELLOW}!${NC}] Some archives have no valid TAM" 1
+    fi
+    echo
+
+    if [[ $manifest_rc -eq 0 && $archives_rc -eq 0 ]]; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] No TAM upgrade needed" 1
+        return "$EXIT_SUCCESS"
+    fi
+
+    if [[ $check_only -eq 1 ]]; then
+        log_status "[${YELLOW}!${NC}] TAM upgrade needed, run: $0 repo upgrade-tam" 1
+        return "$EXIT_BORG_ERROR"
+    fi
+
+    echo -e "${YELLOW}WARNING: Adding TAMs trusts ALL archives currently in the repository.${NC}"
+    echo "Only continue if you trust the repository contents (no attacker had write access)."
+    echo "Make sure all clients using this repository run borg >= 1.2.5."
+    echo
+    read -rp "Continue with TAM upgrade? (type 'YES' to confirm): " confirm
+    if [[ "$confirm" != "YES" ]]; then
+        log_status "[${YELLOW}!${NC}] TAM upgrade cancelled" 1
+        return "$EXIT_USER_ABORT"
+    fi
+    echo
+
+    if [[ $manifest_rc -ne 0 ]]; then
+        log_status "[ ] Upgrading manifest TAM"
+        debug_msg "borg upgrade --show-rc --tam --force \"$repo_path\""
+        if borg upgrade --show-rc --tam --force "$repo_path"; then
+            log_status "[${GREEN}${CHECKMARK}${NC}] Upgrading manifest TAM" 1
+        else
+            log_status "[${RED}${CROSSMARK}${NC}] Upgrading manifest TAM" 1
+            return "$EXIT_BORG_ERROR"
+        fi
+    fi
+
+    if [[ $archives_rc -ne 0 ]]; then
+        log_status "[i] Adding TAM to archives (may take a while)" 1
+        debug_msg "BORG_WORKAROUNDS=ignore_invalid_archive_tam borg upgrade --show-rc --archives-tam \"$repo_path\""
+        if BORG_WORKAROUNDS=ignore_invalid_archive_tam borg upgrade --show-rc --archives-tam "$repo_path"; then
+            log_status "[${GREEN}${CHECKMARK}${NC}] Adding TAM to archives" 1
+        else
+            log_status "[${RED}${CROSSMARK}${NC}] Adding TAM to archives" 1
+            return "$EXIT_BORG_ERROR"
+        fi
+    fi
+    echo
+
+    # Verify result
+    log_status "[ ] Verifying TAM status"
+    debug_msg "borg upgrade --check-tam \"$repo_path\""
+    debug_msg "borg upgrade --check-archives-tam \"$repo_path\""
+    if borg upgrade --check-tam "$repo_path" >/dev/null 2>&1 \
+        && borg upgrade --check-archives-tam "$repo_path" >/dev/null 2>&1; then
+        log_status "[${GREEN}${CHECKMARK}${NC}] Verifying TAM status" 1
+    else
+        log_status "[${RED}${CROSSMARK}${NC}] Verifying TAM status" 1
+        echo "Run '$0 repo upgrade-tam --check' for details."
         return "$EXIT_BORG_ERROR"
     fi
 
@@ -2059,7 +2166,7 @@ _borgctl_complete() {
 
   local sub1="backup repo completion help init-config readme config-check"
   local backup_sub="create delete list mount restore"
-  local repo_sub="init info health-check maintain lock-check lock-break cache-rebuild repair purge-local-cache"
+  local repo_sub="init info health-check maintain lock-check lock-break cache-rebuild repair purge-local-cache upgrade-tam"
 
   if [[ ${cword} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${sub1}" -- "$cur") )
@@ -2106,6 +2213,7 @@ show_help() {
     echo "    repo cache-rebuild                 Rebuild local cache"
     echo "    repo repair                        Repair repository (check --repair)"
     echo "    repo purge-local-cache             Delete local cache only"
+    echo "    repo upgrade-tam [--check]         TAM upgrade (required for borg 1.4)"
     echo
     echo -e "  ${b}Configuration & Help:${nb}"
     echo "    init-config                        Create configuration"
@@ -2241,6 +2349,11 @@ main() {
                 purge-local-cache)
                     shift 2
                     repo_purge_local_cache "$@"
+                    exit $?
+                    ;;
+                upgrade-tam)
+                    shift 2
+                    repo_upgrade_tam "$@"
                     exit $?
                     ;;
                 *)
