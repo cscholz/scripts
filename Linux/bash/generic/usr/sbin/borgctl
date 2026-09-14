@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20260914.02
+# Version=20260914.03
 # Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
@@ -707,18 +707,34 @@ backup_create() {
 
     else
         log_status "[${RED}${CROSSMARK}${NC}] Creating backup: ${snapshot_name}" 1
+
+        local tam_error=0
+        if detect_tam_error "$borg_output"; then
+            tam_error=1
+            echo
+            echo -e "${RED}$(print_tam_hint)${NC}"
+        fi
+
         if [[ -n "${mail_recipient:-}" ]]; then
             local subject="[$(hostname)] - borg FAILED (${snapshot_name})"
+            [[ $tam_error -eq 1 ]] && subject="[$(hostname)] - borg FAILED - TAM UPGRADE REQUIRED (${snapshot_name})"
             local mailfile
             mailfile=$(tempfile)
             {
+                if [[ $tam_error -eq 1 ]]; then
+                    print_tam_hint
+                    echo
+                    echo "------------------------------------------------------------"
+                    echo
+                fi
                 echo "Backup FAILED."
                 echo "Repository: ${repo_path}"
                 echo "Backup name: ${snapshot_name}"
                 echo "Exit code: ${rc}"
                 echo
-                echo "borg output:"
-                echo "$borg_output"
+                echo "borg output (progress lines removed):"
+                # --progress redraws the line with \r; keep only the final text of each line
+                sed 's/.*\r//' "$borg_log_file" | grep -v '^[[:space:]]*$'
             } > "$mailfile"
             send_mail_notification "$subject" "$mailfile"
         fi
@@ -727,6 +743,29 @@ backup_create() {
     fi
 
     return "$EXIT_SUCCESS"
+}
+
+# Detect TAM authentication errors (borg >= 1.2.5 / 1.4 on a repository without TAM upgrade)
+# Args: $1=borg output
+# Returns: 0 if a TAM error was found, 1 otherwise
+detect_tam_error() {
+    grep -qE "TAMInvalid|TAMRequiredError|TAMUnsupported|authentication did not verify|is unauthenticated, but it is required" <<< "$1"
+}
+
+# Print explanation and fix for TAM errors (used in console output and mails)
+print_tam_hint() {
+    echo "!!! ACTION REQUIRED: TAM UPGRADE NECESSARY !!!"
+    echo
+    echo "borg reported a TAM authentication error. Since borg 1.2.5 (and in 1.4)"
+    echo "the manifest and all archives must be TAM authenticated"
+    echo "(CVE-2023-36811). This repository has not been upgraded yet."
+    echo "Backups will keep failing until the upgrade is done."
+    echo
+    echo "Fix (on $(hostname), as the user running the backup):"
+    echo "  $0 repo upgrade-tam --check"
+    echo "  $0 repo upgrade-tam"
+    echo
+    echo "Details: https://borgbackup.readthedocs.io/en/stable/changes.html#pre-1-2-5-archives-spoofing-vulnerability-cve-2023-36811"
 }
 
 # Delete one or more backup archives
