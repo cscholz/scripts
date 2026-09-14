@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version=20260914.01
+# Version=20260914.02
 # Wrapper for easy borg usage - Using deduplicated size (actual disk usage)
 
 #====================[ exit codes ]====================
@@ -1635,6 +1635,22 @@ repo_upgrade_tam() {
     echo "Archives without TAM (created by borg < 1.0.9, or by rename/recreate with"
     echo "affected versions) are hidden or rejected by borg 1.4."
     echo
+
+    # --check-tam, --check-archives-tam and --archives-tam exist only since borg 1.2.5
+    local tam_min_version="1.2.5"
+    local installed_version
+    installed_version=$(borg --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    debug_msg "Installed borg version: ${installed_version:-unknown}, Required for TAM upgrade: ${tam_min_version}"
+
+    if [[ -z "$installed_version" ]] || \
+       [[ "$(printf '%s\n%s\n' "$tam_min_version" "$installed_version" | sort -V | head -1)" != "$tam_min_version" ]]; then
+        log_status "[${RED}${CROSSMARK}${NC}] Borg ${installed_version:-unknown} does not support TAM upgrade (required: >= ${tam_min_version})" 1
+        echo
+        echo "No action needed with this borg version - TAMs are only enforced by borg >= 1.2.5."
+        echo "Upgrade borg on this client first (e.g. to 1.4.x), then run:"
+        echo "  $0 repo upgrade-tam --check"
+        return "$EXIT_BORG_ERROR"
+    fi
 
     # Step 1: manifest TAM
     log_status "[i] Step 1/2: Checking manifest TAM" 1
